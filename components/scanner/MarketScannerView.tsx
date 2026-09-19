@@ -330,7 +330,7 @@ export function MarketScannerView() {
                         )}
                       </td>
                       <td className="py-3 pr-4 text-muted"><div className="font-medium text-foreground">{analysis.strategy}</div><div className="mt-1 text-xs text-muted">{analysis.sampleSize < 10 ? "Building sample" : analysis.dominantDigit !== null ? `Dominant digit ${analysis.dominantDigit}` : "Analyzing"}</div></td>
-                      <td className="py-3 pr-4"><div className="font-medium text-foreground">{analysis.entryState}</div><div className="mt-1 text-xs text-muted">{analysis.sampleSize < 10 ? `Collecting ${analysis.sampleSize}/10 ticks` : analysis.dominantDigit !== null && analysis.dominantFrequency !== null ? `Digit ${analysis.dominantDigit} Â· ${((analysis.dominantFrequency * 100).toFixed(1))}% Â· ${analysis.sampleSize} ticks` : `${analysis.sampleSize} ticks`}</div></td>
+                      <td className="py-3 pr-4"><div className="font-medium text-foreground">{analysis.entryState}</div><div className="mt-1 text-xs text-muted">{analysis.entryState === "COLLECTING" ? `Building sample | ${analysis.sampleSize}/10 ticks` : analysis.dominantDigit !== null && analysis.dominantFrequency !== null ? `${analysis.entryState === "SIGNAL" ? "Dominant" : "Watching"} digit ${analysis.dominantDigit} | ${(analysis.dominantFrequency * 100).toFixed(1)}% | ${analysis.sampleSize} ticks` : `${analysis.sampleSize} ticks`}</div></td>
                       <td className="py-3">
                         <button
                           type="button"
@@ -552,4 +552,5 @@ function quoteForRow(
     status: "LIVE",
   };
 }
+
 
