@@ -43,6 +43,7 @@ export function MarketScannerView() {
   const [statusDetail, setStatusDetail] = useState<string | null>(null);
   const [symbols, setSymbols] = useState<DerivActiveSymbol[]>([]);
   const [query, setQuery] = useState("");
+  const [entryStateFilter, setEntryStateFilter] = useState<"all" | "SIGNAL" | "MONITORING" | "COLLECTING">("all");
   const [category, setCategory] = useState<MarketCategoryId>("all");
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [marketTicks, setMarketTicks] = useState<Record<string, MarketTickSnapshot>>(
@@ -165,11 +166,12 @@ export function MarketScannerView() {
       const name = (symbol.underlying_symbol_name ?? symbol.underlying_symbol).toLowerCase();
       const code = symbol.underlying_symbol.toLowerCase();
       const matchesQuery = term.length === 0 || name.includes(term) || code.includes(term);
-      const matchesCategory =
-        category === "all" || symbol.category === category;
-      return matchesQuery && matchesCategory;
+      const matchesCategory = category === "all" || symbol.category === category;
+      const analysis = analyzeDigits(digitHistory[symbol.underlying_symbol] ?? []);
+      const matchesEntryState = entryStateFilter === "all" || analysis.entryState === entryStateFilter;
+      return matchesQuery && matchesCategory && matchesEntryState;
     });
-  }, [category, query, symbols]);
+  }, [category, entryStateFilter, query, symbols, digitHistory]);
 
   useEffect(() => {
     const client = clientRef.current;
@@ -552,5 +554,8 @@ function quoteForRow(
     status: "LIVE",
   };
 }
+
+
+
 
 
