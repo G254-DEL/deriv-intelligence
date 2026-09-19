@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card } from "@/components/ui/Card";
@@ -120,8 +120,8 @@ export function MarketScannerView() {
                 [symbol]: {
                   symbol,
                   quote: "",
-                  formattedPrice: "â€”",
-                  digit: "â€”",
+                  formattedPrice: "Ã¢â‚¬â€",
+                  digit: "Ã¢â‚¬â€",
                   epoch: 0,
                   status,
                   receivedAt: Date.now(),
@@ -329,8 +329,8 @@ export function MarketScannerView() {
                           quote.status
                         )}
                       </td>
-                      <td className="py-3 pr-4 text-muted">{analysis.strategy}</td>
-                      <td className="py-3 pr-4"><div className="font-medium text-foreground">{analysis.entryState}</div><div className="mt-1 text-xs text-muted">{analysis.sampleSize < 10 ? `Collecting ${analysis.sampleSize}/10 ticks` : analysis.dominantDigit !== null && analysis.dominantFrequency !== null ? `Digit ${analysis.dominantDigit} · ${((analysis.dominantFrequency * 100).toFixed(1))}% · ${analysis.sampleSize} ticks` : `${analysis.sampleSize} ticks`}</div></td>
+                      <td className="py-3 pr-4 text-muted"><div className="font-medium text-foreground">{analysis.strategy}</div><div className="mt-1 text-xs text-muted">{analysis.sampleSize < 10 ? "Building sample" : analysis.dominantDigit !== null ? `Dominant digit ${analysis.dominantDigit}` : "Analyzing"}</div></td>
+                      <td className="py-3 pr-4"><div className="font-medium text-foreground">{analysis.entryState}</div><div className="mt-1 text-xs text-muted">{analysis.sampleSize < 10 ? `Collecting ${analysis.sampleSize}/10 ticks` : analysis.dominantDigit !== null && analysis.dominantFrequency !== null ? `Digit ${analysis.dominantDigit} Â· ${((analysis.dominantFrequency * 100).toFixed(1))}% Â· ${analysis.sampleSize} ticks` : `${analysis.sampleSize} ticks`}</div></td>
                       <td className="py-3">
                         <button
                           type="button"
@@ -516,39 +516,40 @@ function quoteForRow(
 ): { price: string; digit: string; status: string } {
   if (!tick) {
     return {
-      price: "â€”",
-      digit: "â€”",
+      price: "Ã¢â‚¬â€",
+      digit: "Ã¢â‚¬â€",
       status: "Waiting",
     };
   }
 
   if (tick.status === "connecting") {
     return {
-      price: tick.formattedPrice || "â€”",
-      digit: tick.digit || "â€”",
+      price: tick.formattedPrice || "Ã¢â‚¬â€",
+      digit: tick.digit || "Ã¢â‚¬â€",
       status: "CONNECTING",
     };
   }
 
   if (tick.status === "error") {
     return {
-      price: tick.formattedPrice || "â€”",
-      digit: tick.digit || "â€”",
+      price: tick.formattedPrice || "Ã¢â‚¬â€",
+      digit: tick.digit || "Ã¢â‚¬â€",
       status: "ERROR",
     };
   }
 
   if (tick.status === "stale") {
     return {
-      price: tick.formattedPrice || "â€”",
-      digit: tick.digit || "â€”",
+      price: tick.formattedPrice || "Ã¢â‚¬â€",
+      digit: tick.digit || "Ã¢â‚¬â€",
       status: "STALE",
     };
   }
 
   return {
-    price: tick.formattedPrice || "â€”",
-    digit: tick.digit || "â€”",
+    price: tick.formattedPrice || "Ã¢â‚¬â€",
+    digit: tick.digit || "Ã¢â‚¬â€",
     status: "LIVE",
   };
 }
+
