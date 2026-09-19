@@ -292,7 +292,7 @@ export function MarketScannerView() {
 </Card>
 
       <Card title="Markets" badge={connectionStateLabel(connectionState)}>
-        <div className="overflow-x-auto">
+        <div className="w-full overflow-x-auto">
           <table className="w-full min-w-[960px] text-left text-sm">
             <thead>
               <tr className="border-b border-border text-xs uppercase tracking-[0.12em] text-muted">
@@ -574,6 +574,7 @@ function quoteForRow(
     status: "LIVE",
   };
 }
+
 
 
 
