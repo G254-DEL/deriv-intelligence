@@ -330,7 +330,7 @@ export function MarketScannerView() {
                         )}
                       </td>
                       <td className="py-3 pr-4 text-muted">{analysis.strategy}</td>
-                      <td className="py-3 pr-4 text-muted">{analysis.entryState}</td>
+                      <td className="py-3 pr-4"><div className="font-medium text-foreground">{analysis.entryState}</div><div className="mt-1 text-xs text-muted">{analysis.sampleSize} ticks{analysis.dominantDigit !== null && analysis.dominantFrequency !== null ? ` | digit ${analysis.dominantDigit} | ${(analysis.dominantFrequency * 100).toFixed(1)}%` : " | collecting"}</div></td>
                       <td className="py-3">
                         <button
                           type="button"
