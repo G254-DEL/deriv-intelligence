@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card } from "@/components/ui/Card";
+import { analyzeDigitBias } from "@/src/lib/strategy/digit-bias";
 import {
   MARKET_CATEGORIES,
   MAX_LIVE_TICK_STREAMS,
@@ -574,6 +575,9 @@ function quoteForRow(
     status: "LIVE",
   };
 }
+
+
+
 
 
 
