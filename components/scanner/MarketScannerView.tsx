@@ -268,8 +268,28 @@ export function MarketScannerView() {
               })}
             </div>
           </fieldset>
-        </div>
-      </Card>
+        <fieldset>
+  <legend className="mb-2 text-xs font-medium uppercase tracking-[0.12em] text-muted">
+    Entry state
+  </legend>
+  <div className="flex flex-wrap gap-2">
+    {(["all", "SIGNAL", "MONITORING", "COLLECTING"] as const).map((item) => {
+      const selected = entryStateFilter === item;
+      return (
+        <button
+          key={item}
+          type="button"
+          onClick={() => setEntryStateFilter(item)}
+          className={`rounded-md border px-3 py-1.5 text-sm ${selected ? "border-border bg-surface-raised text-foreground" : "border-border text-muted hover:text-foreground"}`}
+        >
+          {item === "all" ? "All" : item}
+        </button>
+      );
+    })}
+  </div>
+</fieldset>
+</div>
+</Card>
 
       <Card title="Markets" badge={connectionStateLabel(connectionState)}>
         <div className="overflow-x-auto">
@@ -554,6 +574,8 @@ function quoteForRow(
     status: "LIVE",
   };
 }
+
+
 
 
 
