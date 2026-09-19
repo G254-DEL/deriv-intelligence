@@ -7,7 +7,7 @@ export type NavItem = {
 export const NAV_ITEMS: NavItem[] = [
   { href: "/", label: "Dashboard", ready: true },
   { href: "/scanner", label: "Market Scanner", ready: true },
-  { href: "/analysis", label: "Analysis", ready: false },
+  { href: "/analysis", label: "Analysis", ready: true },
   { href: "/entry-maps", label: "Entry Maps", ready: false },
   { href: "/strategies", label: "Strategies", ready: false },
   { href: "/backtesting", label: "Backtesting", ready: false },
@@ -17,3 +17,4 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/trade-history", label: "Trade History", ready: false },
   { href: "/settings", label: "Settings", ready: false },
 ];
+
