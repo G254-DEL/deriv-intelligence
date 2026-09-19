@@ -120,8 +120,8 @@ export function MarketScannerView() {
                 [symbol]: {
                   symbol,
                   quote: "",
-                  formattedPrice: "—",
-                  digit: "—",
+                  formattedPrice: "â€”",
+                  digit: "â€”",
                   epoch: 0,
                   status,
                   receivedAt: Date.now(),
@@ -330,7 +330,7 @@ export function MarketScannerView() {
                         )}
                       </td>
                       <td className="py-3 pr-4 text-muted">{analysis.strategy}</td>
-                      <td className="py-3 pr-4"><div className="font-medium text-foreground">{analysis.entryState}</div><div className="mt-1 text-xs text-muted">{analysis.sampleSize} ticks{analysis.dominantDigit !== null && analysis.dominantFrequency !== null ? ` | digit ${analysis.dominantDigit} | ${(analysis.dominantFrequency * 100).toFixed(1)}%` : " | collecting"}</div></td>
+                      <td className="py-3 pr-4"><div className="font-medium text-foreground">{analysis.entryState}</div><div className="mt-1 text-xs text-muted">{analysis.sampleSize < 10 ? `Collecting ${analysis.sampleSize}/10 ticks` : analysis.dominantDigit !== null && analysis.dominantFrequency !== null ? `Digit ${analysis.dominantDigit} · ${((analysis.dominantFrequency * 100).toFixed(1))}% · ${analysis.sampleSize} ticks` : `${analysis.sampleSize} ticks`}</div></td>
                       <td className="py-3">
                         <button
                           type="button"
@@ -516,39 +516,39 @@ function quoteForRow(
 ): { price: string; digit: string; status: string } {
   if (!tick) {
     return {
-      price: "—",
-      digit: "—",
+      price: "â€”",
+      digit: "â€”",
       status: "Waiting",
     };
   }
 
   if (tick.status === "connecting") {
     return {
-      price: tick.formattedPrice || "—",
-      digit: tick.digit || "—",
+      price: tick.formattedPrice || "â€”",
+      digit: tick.digit || "â€”",
       status: "CONNECTING",
     };
   }
 
   if (tick.status === "error") {
     return {
-      price: tick.formattedPrice || "—",
-      digit: tick.digit || "—",
+      price: tick.formattedPrice || "â€”",
+      digit: tick.digit || "â€”",
       status: "ERROR",
     };
   }
 
   if (tick.status === "stale") {
     return {
-      price: tick.formattedPrice || "—",
-      digit: tick.digit || "—",
+      price: tick.formattedPrice || "â€”",
+      digit: tick.digit || "â€”",
       status: "STALE",
     };
   }
 
   return {
-    price: tick.formattedPrice || "—",
-    digit: tick.digit || "—",
+    price: tick.formattedPrice || "â€”",
+    digit: tick.digit || "â€”",
     status: "LIVE",
   };
 }
