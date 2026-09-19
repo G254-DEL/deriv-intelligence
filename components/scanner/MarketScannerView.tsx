@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card } from "@/components/ui/Card";
@@ -122,8 +122,8 @@ export function MarketScannerView() {
                 [symbol]: {
                   symbol,
                   quote: "",
-                  formattedPrice: "Ã¢â‚¬â€",
-                  digit: "Ã¢â‚¬â€",
+                  formattedPrice: "â€”",
+                  digit: "â€”",
                   epoch: 0,
                   status,
                   receivedAt: Date.now(),
@@ -168,8 +168,8 @@ export function MarketScannerView() {
       const code = symbol.underlying_symbol.toLowerCase();
       const matchesQuery = term.length === 0 || name.includes(term) || code.includes(term);
       const matchesCategory = category === "all" || symbol.category === category;
-      const analysis = analyzeDigits(digitHistory[symbol.underlying_symbol] ?? []);
-      const matchesEntryState = entryStateFilter === "all" || analysis.entryState === entryStateFilter;
+      const analysis = analyzeDigitBias(digitHistory[symbol.underlying_symbol] ?? []);
+      const matchesEntryState = entryStateFilter === "all" || analysis.state === entryStateFilter;
       return matchesQuery && matchesCategory && matchesEntryState;
     });
   }, [category, entryStateFilter, query, symbols, digitHistory]);
@@ -539,42 +539,48 @@ function quoteForRow(
 ): { price: string; digit: string; status: string } {
   if (!tick) {
     return {
-      price: "Ã¢â‚¬â€",
-      digit: "Ã¢â‚¬â€",
+      price: "â€”",
+      digit: "â€”",
       status: "Waiting",
     };
   }
 
   if (tick.status === "connecting") {
     return {
-      price: tick.formattedPrice || "Ã¢â‚¬â€",
-      digit: tick.digit || "Ã¢â‚¬â€",
+      price: tick.formattedPrice || "â€”",
+      digit: tick.digit || "â€”",
       status: "CONNECTING",
     };
   }
 
   if (tick.status === "error") {
     return {
-      price: tick.formattedPrice || "Ã¢â‚¬â€",
-      digit: tick.digit || "Ã¢â‚¬â€",
+      price: tick.formattedPrice || "â€”",
+      digit: tick.digit || "â€”",
       status: "ERROR",
     };
   }
 
   if (tick.status === "stale") {
     return {
-      price: tick.formattedPrice || "Ã¢â‚¬â€",
-      digit: tick.digit || "Ã¢â‚¬â€",
+      price: tick.formattedPrice || "â€”",
+      digit: tick.digit || "â€”",
       status: "STALE",
     };
   }
 
   return {
-    price: tick.formattedPrice || "Ã¢â‚¬â€",
-    digit: tick.digit || "Ã¢â‚¬â€",
+    price: tick.formattedPrice || "â€”",
+    digit: tick.digit || "â€”",
     status: "LIVE",
   };
 }
+
+
+
+
+
+
 
 
 
