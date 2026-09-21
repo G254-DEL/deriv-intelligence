@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card } from "@/components/ui/Card";
@@ -122,8 +122,8 @@ export function MarketScannerView() {
                 [symbol]: {
                   symbol,
                   quote: "",
-                  formattedPrice: "â€”",
-                  digit: "â€”",
+      formattedPrice: "-",
+      digit: "-",
                   epoch: 0,
                   status,
                   receivedAt: Date.now(),
@@ -539,39 +539,39 @@ function quoteForRow(
 ): { price: string; digit: string; status: string } {
   if (!tick) {
     return {
-      price: "â€”",
-      digit: "â€”",
+      price: "-",
+      digit: "-",
       status: "Waiting",
     };
   }
 
   if (tick.status === "connecting") {
     return {
-      price: tick.formattedPrice || "â€”",
-      digit: tick.digit || "â€”",
+      price: tick.formattedPrice || "-",
+      digit: tick.digit || "-",
       status: "CONNECTING",
     };
   }
 
   if (tick.status === "error") {
     return {
-      price: tick.formattedPrice || "â€”",
-      digit: tick.digit || "â€”",
+      price: tick.formattedPrice || "-",
+      digit: tick.digit || "-",
       status: "ERROR",
     };
   }
 
   if (tick.status === "stale") {
     return {
-      price: tick.formattedPrice || "â€”",
-      digit: tick.digit || "â€”",
+      price: tick.formattedPrice || "-",
+      digit: tick.digit || "-",
       status: "STALE",
     };
   }
 
   return {
-    price: tick.formattedPrice || "â€”",
-    digit: tick.digit || "â€”",
+    price: tick.formattedPrice || "-",
+    digit: tick.digit || "-",
     status: "LIVE",
   };
 }
