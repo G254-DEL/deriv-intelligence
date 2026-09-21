@@ -47,7 +47,6 @@ export function MarketScannerView() {
   const [entryStateFilter, setEntryStateFilter] = useState<"all" | "SIGNAL" | "MONITORING" | "COLLECTING">("all");
   const [category, setCategory] = useState<MarketCategoryId>("all");
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
-  const [rotationOffset, setRotationOffset] = useState(0);
   const [marketTicks, setMarketTicks] = useState<Record<string, MarketTickSnapshot>>(
     {},
   );
@@ -183,20 +182,12 @@ export function MarketScannerView() {
 
     const handle = window.setTimeout(() => {
       client.setTickSubscriptions(
-        pickLiveSymbols(rows, selectedSymbol, MAX_LIVE_TICK_STREAMS, rotationOffset),
+        pickLiveSymbols(rows, selectedSymbol, MAX_LIVE_TICK_STREAMS),
       );
     }, 200);
 
     return () => window.clearTimeout(handle);
-  }, [connectionState, rows, selectedSymbol, rotationOffset]);
-
-  useEffect(() => {
-    if (connectionState !== "connected" || rows.length <= MAX_LIVE_TICK_STREAMS) return;
-    const timer = window.setInterval(() => {
-      setRotationOffset((current) => (current + MAX_LIVE_TICK_STREAMS) % rows.length);
-    }, 10000);
-    return () => window.clearInterval(timer);
-  }, [connectionState, rows.length]);
+  }, [connectionState, rows, selectedSymbol]);
 
   function handleWatch(symbol: string) {
     setSelectedSymbol(symbol);
@@ -585,6 +576,8 @@ function quoteForRow(
     status: "LIVE",
   };
 }
+
+
 
 
 

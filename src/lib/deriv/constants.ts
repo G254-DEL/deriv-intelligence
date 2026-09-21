@@ -25,5 +25,6 @@ export const MARKET_CATEGORIES = [
 
 export type MarketCategoryId = (typeof MARKET_CATEGORIES)[number]["id"];
 
-export const MAX_LIVE_TICK_STREAMS = 8;
+export const MAX_LIVE_TICK_STREAMS = 1000;
 export const TICK_STALE_AFTER_MS = 8000;
+
