@@ -25,6 +25,8 @@ export default function AnalysisPage() {
       },
     });
 
+    session.client.subscribeTicks("R_100");
+
     return () => session.release();
   }, []);
 
@@ -107,6 +109,7 @@ export default function AnalysisPage() {
     </div>
   );
 }
+
 
 
 
