@@ -1,4 +1,4 @@
-import { DERIV_PUBLIC_WS_URL, MAX_LIVE_TICK_STREAMS, TICK_STALE_AFTER_MS } from "./constants";
+﻿import { DERIV_PUBLIC_WS_URL, MAX_LIVE_TICK_STREAMS, TICK_STALE_AFTER_MS } from "./constants";
 import { classifyMarketCategory } from "./classify-market";
 import { TickHistoryStore } from "./tick-history";
 import {
@@ -452,6 +452,12 @@ export class PublicMarketDataClient {
     }
 
     this.setState("disconnected", detail);
+
+    window.setTimeout(() => {
+      if (!this.closedIntentionally) {
+        this.connect();
+      }
+    }, 2000);
   }
 
   private send(body: JsonRecord): void {
@@ -496,7 +502,7 @@ export class PublicMarketDataClient {
       symbol: tick.symbol,
       quote: tick.quote,
       formattedPrice: extracted?.formatted ?? String(tick.quote),
-      digit: extracted?.digit ?? "—",
+      digit: extracted?.digit ?? "â€”",
       epoch: tick.epoch,
       id: tick.id,
       status,
@@ -551,7 +557,7 @@ let sharedRefs = 0;
 let sharedReleaseTimer: number | null = null;
 
 /**
- * Keeps one public market-data socket across React Strict Mode’s
+ * Keeps one public market-data socket across React Strict Modeâ€™s
  * immediate unmount/remount so the connection is not closed before it opens.
  */
 export function retainPublicMarketData(
@@ -793,3 +799,5 @@ function readQuote(value: unknown): number | string | null {
 
   return null;
 }
+
+
