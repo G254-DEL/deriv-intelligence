@@ -491,47 +491,14 @@ function parseValidDigit(value: string | number | undefined | null): number | nu
 }
 
 function analyzeDigits(digits: number[]): RowAnalysis {
-  const valid = digits.filter(
-    (digit) => Number.isInteger(digit) && digit >= 0 && digit <= 9,
-  );
-  const total = valid.length;
-
-  if (total < 10) {
-    return {
-      strategy: "Digit Bias",
-      entryState: "COLLECTING",
-      dominantDigit: null,
-      dominantFrequency: null,
-      sampleSize: total,
-    };
-  }
-
-  const counts = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-
-  for (const digit of valid) {
-    counts[digit] += 1;
-  }
-
-  const highestCount = Math.max(...counts);
-  const frequency = highestCount / total;
-  const dominantDigit = counts.indexOf(highestCount);
-
-  if (!Number.isFinite(frequency) || frequency < 0.2) {
-    return {
-      strategy: "Digit Bias",
-      entryState: "MONITORING",
-      dominantDigit,
-      dominantFrequency: frequency,
-      sampleSize: total,
-    };
-  }
+  const analysis = analyzeDigitBias(digits);
 
   return {
-    strategy: "Digit Bias",
-    entryState: "SIGNAL",
-    dominantDigit,
-    dominantFrequency: frequency,
-    sampleSize: total,
+    strategy: analysis.strategy,
+    entryState: analysis.state,
+    dominantDigit: analysis.dominantDigit,
+    dominantFrequency: analysis.dominantFrequency,
+    sampleSize: analysis.sampleSize,
   };
 }
 
@@ -576,6 +543,7 @@ function quoteForRow(
     status: "LIVE",
   };
 }
+
 
 
 
