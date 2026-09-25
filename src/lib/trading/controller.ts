@@ -85,8 +85,9 @@ export function closeControlledPaperTrade(
   trade: PaperTrade,
   exitDigit: number,
   payout: number,
-  evenOddSide: "EVEN" | "ODD" = "EVEN",
+
 ): { trade: PaperTrade; session: TradingSession } {
+  const evenOddSide: "EVEN" | "ODD" = trade.contractType === "DIGITODD" ? "ODD" : "EVEN";
   const won = strategyWins(trade.strategy, exitDigit, evenOddSide);
 
   const settledTrade = settlePaperTrade(
@@ -101,3 +102,4 @@ export function closeControlledPaperTrade(
     session: recordPaperTrade(session, settledTrade),
   };
 }
+
