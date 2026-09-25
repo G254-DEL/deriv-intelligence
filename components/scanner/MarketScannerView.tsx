@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import { analyzeDigitBias } from "@/src/lib/strategy/digit-bias";
+import { createTradingSignal } from "@/src/lib/trading/signal";
+import { createTradingSession, type TradingSession } from "@/src/lib/trading/session";
 import {
   MARKET_CATEGORIES,
   MAX_LIVE_TICK_STREAMS,
@@ -52,6 +54,7 @@ export function MarketScannerView() {
   );
   const [digitHistory, setDigitHistory] = useState<Record<string, number[]>>({});
   const lastDigitEpochRef = useRef<Record<string, number>>({});
+  const [tradingSession, setTradingSession] = useState<TradingSession>(createTradingSession);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -322,6 +325,7 @@ export function MarketScannerView() {
                   const analysis = analyzeDigits(
                     digitHistory[symbol.underlying_symbol] ?? [],
                   );
+      const tradingSignal = createTradingSignal(analyzeDigitBias(digitHistory[symbol.underlying_symbol] ?? []));
 
                   return (
                     <tr
@@ -543,6 +547,11 @@ function quoteForRow(
     status: "LIVE",
   };
 }
+
+
+
+
+
 
 
 
