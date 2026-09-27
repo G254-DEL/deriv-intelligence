@@ -36,11 +36,11 @@ export function getRecoveryDecision(
 
   return {
     recoveryMode: true,
-    allowed: false,
+    allowed: true,
     stakeMultiplier: 1,
     minimumConfidence: 0.8,
     shouldRescan: true,
-    reason: "Two consecutive losses: stop new trades and rescan",
+    reason: "Two consecutive losses: switch market and seek a stronger recovery signal",
   };
 }
 
@@ -101,3 +101,6 @@ export function calculateRecoveryStake(params: {
       : "Base stake",
   };
 }
+
+
+

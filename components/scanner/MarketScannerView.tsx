@@ -4,6 +4,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import { analyzeDigitBias } from "@/src/lib/strategy/digit-bias";
 import { createTradingSignal } from "@/src/lib/trading/signal";
+import { evaluatePaperTrade } from "@/src/lib/trading/bot-engine";
+import { openControlledPaperTrade, closeControlledPaperTrade } from "@/src/lib/trading/controller";
+import type { PaperTrade } from "@/src/lib/trading/types";
 import { createTradingSession, type TradingSession } from "@/src/lib/trading/session";
 import {
   MARKET_CATEGORIES,
@@ -16,6 +19,9 @@ import {
   type MarketTickSnapshot,
   type PublicMarketDataClient,
 } from "@/src/lib/deriv";
+
+const PAPER_PAYOUT_RATIO = 0.90;
+const PAPER_TARGET_PROFIT = 0.10;
 
 const SCANNER_NOTICE =
   "The scanner will use public Deriv market-data streams. No trading orders are placed from this page.";
@@ -54,7 +60,23 @@ export function MarketScannerView() {
   );
   const [digitHistory, setDigitHistory] = useState<Record<string, number[]>>({});
   const lastDigitEpochRef = useRef<Record<string, number>>({});
+  const digitHistoryRef = useRef<Record<string, number[]>>({});
   const [tradingSession, setTradingSession] = useState<TradingSession>(createTradingSession);
+  const [openPaperTrade, setOpenPaperTrade] = useState<PaperTrade | null>(null);
+  const tradingSessionRef = useRef<TradingSession>(tradingSession);
+
+  useEffect(() => {
+    digitHistoryRef.current = digitHistory;
+  }, [digitHistory]);
+  const openPaperTradeRef = useRef<PaperTrade | null>(openPaperTrade);
+
+  useEffect(() => {
+    tradingSessionRef.current = tradingSession;
+  }, [tradingSession]);
+
+  useEffect(() => {
+    openPaperTradeRef.current = openPaperTrade;
+  }, [openPaperTrade]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -547,6 +569,15 @@ function quoteForRow(
     status: "LIVE",
   };
 }
+
+
+
+
+
+
+
+
+
 
 
 
