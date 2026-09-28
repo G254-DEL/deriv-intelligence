@@ -5,6 +5,7 @@ import { Card } from "@/components/ui/Card";
 import { analyzeDigitBias } from "@/src/lib/strategy/digit-bias";
 import { createTradingSignal } from "@/src/lib/trading/signal";
 import { evaluatePaperTrade } from "@/src/lib/trading/bot-engine";
+import { DEFAULT_RISK_CONFIG } from "@/src/lib/trading/risk";
 import { openControlledPaperTrade, closeControlledPaperTrade } from "@/src/lib/trading/controller";
 import type { PaperTrade } from "@/src/lib/trading/types";
 import { createTradingSession, type TradingSession } from "@/src/lib/trading/session";
@@ -128,6 +129,7 @@ export function MarketScannerView() {
         setDigitHistory((current) => {
           const previous = current[snapshot.symbol] ?? [];
           const next = [...previous, digit].slice(-20);
+        digitHistoryRef.current[snapshot.symbol] = next;
           return {
             ...current,
             [snapshot.symbol]: next,
@@ -569,6 +571,8 @@ function quoteForRow(
     status: "LIVE",
   };
 }
+
+
 
 
 
