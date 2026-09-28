@@ -70,6 +70,7 @@ export function MarketScannerView() {
     digitHistoryRef.current = digitHistory;
   }, [digitHistory]);
   const openPaperTradeRef = useRef<PaperTrade | null>(openPaperTrade);
+  const openPaperTradeEpochRef = useRef<number | null>(null);
 
   useEffect(() => {
     tradingSessionRef.current = tradingSession;
@@ -571,6 +572,9 @@ function quoteForRow(
     status: "LIVE",
   };
 }
+
+
+
 
 
 
