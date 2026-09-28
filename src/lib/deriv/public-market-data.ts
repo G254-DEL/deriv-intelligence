@@ -11,6 +11,8 @@ import type {
   DerivTick,
   MarketTickSnapshot,
   MarketTickStatus,
+  DerivProposal,
+  ProposalRequest,
 } from "./types";
 
 export type PublicMarketDataHandlers = {
@@ -59,6 +61,7 @@ export class PublicMarketDataClient {
   private state: DerivConnectionState = "disconnected";
   private detail: string | undefined;
   private reqId = 1;
+  private readonly pendingProposals = new Map<number, { resolve: (proposal: DerivProposal) => void; reject: (error: Error) => void }>();
   private handlers: PublicMarketDataHandlers;
   private generation = 0;
   private closedIntentionally = false;
@@ -155,6 +158,23 @@ export class PublicMarketDataClient {
     });
   }
 
+  requestProposal(request: Omit<ProposalRequest, "proposal" | "req_id">): Promise<DerivProposal> {
+    if (!this.canSend()) {
+      return Promise.reject(new Error("Deriv WebSocket is not connected"));
+    }
+
+    const reqId = this.nextReqId();
+
+    return new Promise<DerivProposal>((resolve, reject) => {
+      this.pendingProposals.set(reqId, { resolve, reject });
+
+      this.send({
+        ...request,
+        proposal: 1,
+        req_id: reqId,
+      });
+    });
+  }
   subscribeTicks(symbol: string): void {
     const next = this.desiredSymbols.filter((item) => item !== symbol);
     next.unshift(symbol);
@@ -318,7 +338,17 @@ export class PublicMarketDataClient {
 
     const apiError = readApiError(payload);
     if (apiError) {
-      const failedSymbol = readFailedTickSymbol(payload);
+      const failedReqId = readNumber(payload.req_id);
+    if (failedReqId !== undefined) {
+      const pendingProposal = this.pendingProposals.get(failedReqId);
+      if (pendingProposal) {
+        this.pendingProposals.delete(failedReqId);
+        pendingProposal.reject(new Error(apiError));
+        return;
+      }
+    }
+
+    const failedSymbol = readFailedTickSymbol(payload);
       if (failedSymbol) {
         derivLog("[Deriv] Tick subscription error:", `${failedSymbol}: ${apiError}`);
         const subscription = this.subscriptions.get(failedSymbol);
@@ -355,6 +385,18 @@ export class PublicMarketDataClient {
     }
 
     const msgType = typeof payload.msg_type === "string" ? payload.msg_type : "";
+
+    if (msgType === "proposal" && isRecord(payload.proposal)) {
+      const reqId = readNumber(payload.req_id);
+      const pending = reqId == null ? undefined : this.pendingProposals.get(reqId);
+
+      if (pending && reqId !== undefined) {
+        this.pendingProposals.delete(reqId);
+        pending.resolve(payload.proposal as DerivProposal);
+      }
+
+      return;
+    }
 
     if (msgType === "tick" || isRecord(payload.tick)) {
       const tick = parseTick(payload.tick);
@@ -799,6 +841,9 @@ function readQuote(value: unknown): number | string | null {
 
   return null;
 }
+
+
+
 
 
 

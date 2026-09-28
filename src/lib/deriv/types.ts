@@ -102,3 +102,32 @@ export type ScannerSnapshot = {
 
 export type TickHandler = (tick: Tick) => void;
 export type Unsubscribe = () => void;
+
+export type ProposalRequest = {
+  proposal: 1;
+  amount: number;
+  basis: "stake" | "payout";
+  contract_type: string;
+  currency: string;
+  underlying_symbol: string;
+  duration?: number;
+  duration_unit?: string;
+  barrier?: string;
+  subscribe?: 1;
+  req_id?: number;
+  passthrough?: Record<string, unknown>;
+};
+
+export type DerivProposal = {
+  id: string;
+  ask_price?: number | string;
+  payout?: number | string;
+  spot?: number | string;
+};
+
+export type ProposalResponse = {
+  msg_type?: "proposal";
+  proposal: DerivProposal;
+  req_id?: number;
+  echo_req?: Record<string, unknown>;
+};

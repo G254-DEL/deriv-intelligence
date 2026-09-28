@@ -26,4 +26,7 @@ export type {
   TicksHistoryRequest,
   TicksSubscribeRequest,
   Unsubscribe,
+  ProposalRequest,
+  DerivProposal,
+  ProposalResponse,
 } from "./types";
