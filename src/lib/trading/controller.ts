@@ -57,7 +57,6 @@ export function openControlledPaperTrade(
     targetProfit: signal.targetProfit ?? 0,
     payoutRatio: signal.payoutRatio,
     baseStake: config.stake,
-    maxStake: config.maxStake,
   });
 
   if (!recoveryStake.allowed) {
@@ -102,4 +101,5 @@ export function closeControlledPaperTrade(
     session: recordPaperTrade(session, settledTrade),
   };
 }
+
 

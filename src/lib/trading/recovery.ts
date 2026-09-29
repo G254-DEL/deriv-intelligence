@@ -55,17 +55,15 @@ export function calculateRecoveryStake(params: {
   targetProfit: number;
   payoutRatio: number;
   baseStake: number;
-  maxStake: number;
 }): RecoveryStakeResult {
   const {
     accumulatedLoss,
     targetProfit,
     payoutRatio,
     baseStake,
-    maxStake,
   } = params;
 
-  if (payoutRatio <= 0 || baseStake <= 0 || maxStake <= 0) {
+  if (payoutRatio <= 0 || baseStake <= 0) {
     return {
       stake: 0,
       allowed: false,
@@ -84,15 +82,6 @@ export function calculateRecoveryStake(params: {
     baseStake,
     Math.ceil(requiredStake * 100) / 100,
   );
-
-  if (stake > maxStake) {
-    return {
-      stake,
-      allowed: false,
-      reason: "Required recovery stake exceeds maximum stake",
-    };
-  }
-
   return {
     stake,
     allowed: true,
@@ -101,6 +90,7 @@ export function calculateRecoveryStake(params: {
       : "Base stake",
   };
 }
+
 
 
 

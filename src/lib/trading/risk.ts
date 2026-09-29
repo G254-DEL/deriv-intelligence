@@ -1,6 +1,5 @@
 export type RiskConfig = {
   stake: number;
-  maxStake: number;
   maxConsecutiveLosses: number;
   maxSessionLoss: number;
   maxTradesPerSession: number;
@@ -9,7 +8,6 @@ export type RiskConfig = {
 
 export const DEFAULT_RISK_CONFIG: RiskConfig = {
   stake: 1,
-  maxStake: 5,
   maxConsecutiveLosses: 3,
   maxSessionLoss: 10,
   maxTradesPerSession: 50,
@@ -28,8 +26,8 @@ export function canPlaceTrade(
   config: RiskConfig = DEFAULT_RISK_CONFIG,
   now = Date.now(),
 ): RiskDecision {
-  if (config.stake <= 0 || config.stake > config.maxStake) {
-    return { allowed: false, reason: "Stake outside allowed limits" };
+  if (config.stake <= 0) {
+    return { allowed: false, reason: "Stake must be greater than zero" };
   }
 
   if (session.totalTrades >= config.maxTradesPerSession) {
@@ -53,3 +51,4 @@ export function canPlaceTrade(
 
   return { allowed: true, reason: "Trade allowed" };
 }
+
