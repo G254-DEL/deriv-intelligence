@@ -21,7 +21,7 @@ import {
   type PublicMarketDataClient,
 } from "@/src/lib/deriv";
 
-const PAPER_PAYOUT_RATIO = 0.90;
+const PAPER_PROPOSAL_CURRENCY = "USD";
 const PAPER_TARGET_PROFIT = 0.10;
 
 const SCANNER_NOTICE =
@@ -65,6 +65,7 @@ export function MarketScannerView() {
   const [tradingSession, setTradingSession] = useState<TradingSession>(createTradingSession);
   const [openPaperTrade, setOpenPaperTrade] = useState<PaperTrade | null>(null);
   const tradingSessionRef = useRef<TradingSession>(tradingSession);
+  const proposalRequestInFlightRef = useRef<Record<string, boolean>>({});
 
   useEffect(() => {
     digitHistoryRef.current = digitHistory;
@@ -519,6 +520,15 @@ function parseValidDigit(value: string | number | undefined | null): number | nu
   return Number(trimmed);
 }
 
+function parseProposalNumber(value: number | string | undefined): number | null {
+  const parsed = typeof value === "number" ? value : Number(value);
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+
+  return parsed;
+}
 function analyzeDigits(digits: number[]): RowAnalysis {
   const analysis = analyzeDigitBias(digits);
 
@@ -572,6 +582,9 @@ function quoteForRow(
     status: "LIVE",
   };
 }
+
+
+
 
 
 
