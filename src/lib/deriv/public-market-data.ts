@@ -14,6 +14,7 @@ import type {
   DerivProposal,
   ProposalRequest,
 } from "./types";
+import { assertAllowedPublicMarketDataRequest } from "./public-request-guard";
 
 export type PublicMarketDataHandlers = {
   onConnectionChange?: (
@@ -204,6 +205,20 @@ export class PublicMarketDataClient {
   }
 
   requestProposal(request: Omit<ProposalRequest, "proposal" | "req_id">): Promise<DerivProposal> {
+    const payload = {
+      ...request,
+      proposal: 1 as const,
+      req_id: this.reqId + 1,
+    };
+
+    try {
+      assertAllowedPublicMarketDataRequest(payload);
+    } catch (error) {
+      return Promise.reject(
+        error instanceof Error ? error : new Error("Rejected live-order request"),
+      );
+    }
+
     if (!this.canSend()) {
       return Promise.reject(new Error("Deriv WebSocket is not connected"));
     }
@@ -585,6 +600,8 @@ export class PublicMarketDataClient {
   }
 
   private send(body: JsonRecord): void {
+    assertAllowedPublicMarketDataRequest(body);
+
     if (!this.canSend() || !this.socket) {
       if (!this.closedIntentionally) {
         derivLog("[Deriv] WebSocket error", "Cannot send because the socket is not open.");

@@ -65,8 +65,7 @@ export async function quoteAndOpenPaperTrade(params: {
       {
         ...signal,
         symbol,
-        payoutRatio: probeQuote.payoutRatio,
-        quotedPayout: probeQuote.payout,
+        quote: probeQuote,
         targetProfit,
       },
       riskConfig,

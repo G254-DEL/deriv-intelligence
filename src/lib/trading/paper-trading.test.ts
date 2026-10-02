@@ -11,6 +11,8 @@ import { canPlaceTrade, DEFAULT_RISK_CONFIG } from "./risk";
 import { getRecoveryDecision } from "./recovery";
 import { strategyWins } from "./strategy-rules";
 import type { PaperTrade } from "./types";
+import { parseProposalQuote } from "./proposal";
+import { evaluatePaperTrade } from "./bot-engine";
 
 const RISK = {
   ...DEFAULT_RISK_CONFIG,
@@ -20,6 +22,16 @@ const RISK = {
 function quoteSignal(
   overrides: Partial<PaperTradeSignal> = {},
 ): PaperTradeSignal {
+  const quote = parseProposalQuote({
+    id: "test-proposal",
+    ask_price: 1,
+    payout: 1.8,
+  });
+
+  if (!quote) {
+    throw new Error("test quote fixture must parse");
+  }
+
   return {
     strategy: "UNDER_7",
     symbol: "1HZ100V",
@@ -27,8 +39,7 @@ function quoteSignal(
     barrier: 7,
     entryDigit: 4,
     confidence: 0.5,
-    payoutRatio: 0.8,
-    quotedPayout: 1.8,
+    quote,
     ...overrides,
   };
 }
@@ -169,12 +180,22 @@ test("risk limits stop new paper trades at max trades per session", () => {
 });
 
 test("opening a paper trade requires a live proposal quote", () => {
-  const result = openControlledPaperTrade(createTradingSession(), quoteSignal({
-    payoutRatio: 0,
-    quotedPayout: 0,
+  const missing = openControlledPaperTrade(
+    createTradingSession(),
+    quoteSignal({ quote: undefined as never }),
+  );
+  assert.equal(missing.allowed, false);
+  assert.match(missing.reason, /proposal quote/i);
+
+  const invented = openControlledPaperTrade(createTradingSession(), quoteSignal({
+    quote: {
+      askPrice: 1,
+      payout: 99,
+      payoutRatio: 98,
+    } as never,
   }));
-  assert.equal(result.allowed, false);
-  assert.match(result.reason, /proposal quote/i);
+  assert.equal(invented.allowed, false);
+  assert.match(invented.reason, /proposal quote/i);
 });
 
 test("recovery after one loss requires a stronger signal", () => {
@@ -199,7 +220,7 @@ test("recovery after one loss requires a stronger signal", () => {
 
   const strong = openControlledPaperTrade(
     session,
-    quoteSignal({ confidence: 0.75, quotedPayout: 1.8 }),
+    quoteSignal({ confidence: 0.75 }),
     { ...RISK, cooldownAfterLossMs: 0 },
   );
   assert.equal(strong.allowed, true);
@@ -227,4 +248,48 @@ test("DIGITODD paper trades settle from the contract type, not a default even si
   const lost = closeControlledPaperTrade(createTradingSession(), trade, 4);
   assert.equal(won.trade.status, "WON");
   assert.equal(lost.trade.status, "LOST");
+});
+
+const SIGNAL_ANALYSIS = {
+  state: "SIGNAL" as const,
+  strategy: "Digit Bias" as const,
+  sampleSize: 20,
+  dominantDigit: 7,
+  dominantFrequency: 0.8,
+};
+
+test("evaluatePaperTrade rejects missing or invalid proposal quotes", () => {
+  const session = createTradingSession();
+
+  const missing = evaluatePaperTrade({
+    symbol: "1HZ100V",
+    analysis: SIGNAL_ANALYSIS,
+    session,
+    proposal: { id: "", ask_price: 1, payout: 1.8 },
+  });
+  assert.ok(missing);
+  assert.equal(missing.allowed, false);
+
+  const invalid = evaluatePaperTrade({
+    symbol: "1HZ100V",
+    analysis: SIGNAL_ANALYSIS,
+    session,
+    proposal: { id: "p", ask_price: 2, payout: 2 },
+  });
+  assert.ok(invalid);
+  assert.equal(invalid.allowed, false);
+});
+
+test("evaluatePaperTrade opens a paper trade only from a parsed proposal", () => {
+  const result = evaluatePaperTrade({
+    symbol: "1HZ100V",
+    analysis: SIGNAL_ANALYSIS,
+    session: createTradingSession(),
+    proposal: { id: "live-quote", ask_price: 1, payout: 1.8 },
+  });
+
+  assert.ok(result);
+  assert.equal(result.allowed, true);
+  assert.equal(result.trade?.quotedPayout, 1.8);
+  assert.equal(result.trade?.stake, DEFAULT_RISK_CONFIG.stake);
 });

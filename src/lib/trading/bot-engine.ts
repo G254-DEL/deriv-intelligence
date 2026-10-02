@@ -1,4 +1,5 @@
 import type { DigitAnalysis } from "../strategy/digit-bias";
+import type { DerivProposal } from "../deriv/types";
 import type { TradingSession } from "./session";
 import type { RiskConfig } from "./risk";
 
@@ -8,13 +9,13 @@ import {
   type OpenTradeResult,
   type PaperTradeSignal,
 } from "./controller";
+import { parseProposalQuote } from "./proposal";
 
 export type BotEngineInput = {
   symbol: string;
   analysis: DigitAnalysis;
   session: TradingSession;
-  payoutRatio: number;
-  quotedPayout: number;
+  proposal: DerivProposal;
   targetProfit?: number;
   riskConfig?: RiskConfig;
 };
@@ -28,11 +29,18 @@ export function evaluatePaperTrade(
     return null;
   }
 
+  const quote = parseProposalQuote(input.proposal);
+  if (!quote) {
+    return {
+      allowed: false,
+      reason: "Live proposal quote is required",
+    };
+  }
+
   const paperSignal: PaperTradeSignal = {
     ...signal,
     symbol: input.symbol,
-    payoutRatio: input.payoutRatio,
-    quotedPayout: input.quotedPayout,
+    quote,
     targetProfit: input.targetProfit,
   };
 

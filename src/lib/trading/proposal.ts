@@ -1,10 +1,44 @@
 import type { DerivProposal, ProposalRequest } from "../deriv/types";
 
+const VALIDATED_PROPOSAL_QUOTE = Symbol("validatedProposalQuote");
+
 export type PaperProposalQuote = {
   askPrice: number;
   payout: number;
   payoutRatio: number;
 };
+
+export type ValidatedPaperProposalQuote = PaperProposalQuote & {
+  readonly [VALIDATED_PROPOSAL_QUOTE]: true;
+};
+
+export function isValidatedProposalQuote(
+  quote: unknown,
+): quote is ValidatedPaperProposalQuote {
+  if (!quote || typeof quote !== "object") {
+    return false;
+  }
+
+  const candidate = quote as Partial<ValidatedPaperProposalQuote>;
+  if (candidate[VALIDATED_PROPOSAL_QUOTE] !== true) {
+    return false;
+  }
+
+  if (
+    !Number.isFinite(candidate.askPrice) ||
+    (candidate.askPrice ?? 0) <= 0 ||
+    !Number.isFinite(candidate.payout) ||
+    (candidate.payout ?? 0) <= (candidate.askPrice ?? 0) ||
+    !Number.isFinite(candidate.payoutRatio) ||
+    (candidate.payoutRatio ?? 0) <= 0
+  ) {
+    return false;
+  }
+
+  const expectedRatio =
+    (candidate.payout! - candidate.askPrice!) / candidate.askPrice!;
+  return Math.abs(expectedRatio - candidate.payoutRatio!) <= 1e-9;
+}
 
 export function parsePositiveProposalNumber(
   value: number | string | undefined,
@@ -26,7 +60,7 @@ export function parsePositiveProposalNumber(
 export function parseProposalQuote(
   proposal: Pick<DerivProposal, "id" | "ask_price" | "payout" | "date_expiry">,
   now = Date.now(),
-): PaperProposalQuote | null {
+): ValidatedPaperProposalQuote | null {
   if (typeof proposal.id !== "string" || proposal.id.trim() === "") {
     return null;
   }
@@ -47,7 +81,12 @@ export function parseProposalQuote(
     return null;
   }
 
-  return { askPrice, payout, payoutRatio };
+  return {
+    askPrice,
+    payout,
+    payoutRatio,
+    [VALIDATED_PROPOSAL_QUOTE]: true,
+  };
 }
 
 function isProposalExpired(

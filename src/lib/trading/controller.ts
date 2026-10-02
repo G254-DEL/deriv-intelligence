@@ -7,6 +7,10 @@ import { getRecoveryDecision, calculateRecoveryStake } from "./recovery";
 import { createPaperTrade, settlePaperTrade } from "./paper-engine";
 import { recordPaperTrade } from "./session";
 import { strategyWins } from "./strategy-rules";
+import {
+  isValidatedProposalQuote,
+  type ValidatedPaperProposalQuote,
+} from "./proposal";
 
 export type PaperTradeSignal = {
   strategy: BotStrategy;
@@ -15,8 +19,7 @@ export type PaperTradeSignal = {
   barrier?: number;
   entryDigit: number;
   confidence: number;
-  payoutRatio: number;
-  quotedPayout: number;
+  quote: ValidatedPaperProposalQuote;
   targetProfit?: number;
   evenOddSide?: "EVEN" | "ODD";
 };
@@ -51,7 +54,7 @@ export function openControlledPaperTrade(
     };
   }
 
-  if (signal.payoutRatio <= 0 || signal.quotedPayout <= 0) {
+  if (!isValidatedProposalQuote(signal.quote)) {
     return {
       allowed: false,
       reason: "Live proposal quote is required",
@@ -63,7 +66,7 @@ export function openControlledPaperTrade(
   const recoveryStake = calculateRecoveryStake({
     accumulatedLoss,
     targetProfit: signal.targetProfit ?? 0,
-    payoutRatio: signal.payoutRatio,
+    payoutRatio: signal.quote.payoutRatio,
     baseStake: config.stake,
   });
 
@@ -77,7 +80,7 @@ export function openControlledPaperTrade(
     contractType: signal.contractType,
     barrier: signal.barrier,
     stake: recovery.recoveryMode ? recoveryStake.stake : config.stake,
-    quotedPayout: signal.quotedPayout,
+    quotedPayout: signal.quote.payout,
     entryDigit: signal.entryDigit,
   });
 
