@@ -45,6 +45,42 @@ const ACTIVE_SYMBOLS_REQUEST = {
 } as const;
 
 const SESSION_RELEASE_DELAY_MS = 400;
+const RECONNECT_BASE_DELAY_MS = 2000;
+const RECONNECT_MAX_DELAY_MS = 30000;
+const PROPOSAL_TIMEOUT_MS = 10000;
+
+type PendingProposal = {
+  resolve: (proposal: DerivProposal) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout> | null;
+};
+
+function clearPendingProposal(
+  pendingProposals: Map<number, PendingProposal>,
+  reqId: number,
+): void {
+  const pending = pendingProposals.get(reqId);
+  if (!pending) {
+    return;
+  }
+  if (pending.timer !== null) {
+    clearTimeout(pending.timer);
+  }
+  pendingProposals.delete(reqId);
+}
+
+function rejectPendingProposals(
+  pendingProposals: Map<number, PendingProposal>,
+  reason: string,
+): void {
+  for (const [reqId, pending] of pendingProposals) {
+    if (pending.timer !== null) {
+      clearTimeout(pending.timer);
+    }
+    pendingProposals.delete(reqId);
+    pending.reject(new Error(reason));
+  }
+}
 
 function derivLog(message: string, extra?: unknown): void {
   if (extra !== undefined) {
@@ -61,7 +97,7 @@ export class PublicMarketDataClient {
   private state: DerivConnectionState = "disconnected";
   private detail: string | undefined;
   private reqId = 1;
-  private readonly pendingProposals = new Map<number, { resolve: (proposal: DerivProposal) => void; reject: (error: Error) => void }>();
+  private readonly pendingProposals = new Map<number, PendingProposal>();
   private handlers: PublicMarketDataHandlers;
   private generation = 0;
   private closedIntentionally = false;
@@ -71,6 +107,8 @@ export class PublicMarketDataClient {
   private readonly latestTicks = new Map<string, MarketTickSnapshot>();
   private desiredSymbols: string[] = [];
   private staleTimer: number | null = null;
+  private reconnectTimer: number | null = null;
+  private reconnectAttempt = 0;
 
   constructor(handlers: PublicMarketDataHandlers = {}) {
     this.handlers = handlers;
@@ -109,10 +147,16 @@ export class PublicMarketDataClient {
     }
 
     this.closedIntentionally = false;
+    this.clearReconnectTimer();
     this.generation += 1;
     const generation = this.generation;
 
-    this.setState("connecting");
+    this.setState(
+      "connecting",
+      this.reconnectAttempt > 0
+        ? `Reconnecting to Deriv market data (attempt ${this.reconnectAttempt})…`
+        : undefined,
+    );
     derivLog("[Deriv] Connecting...", this.endpoint);
 
     try {
@@ -147,6 +191,7 @@ export class PublicMarketDataClient {
         "error",
         error instanceof Error ? error.message : "Failed to open WebSocket.",
       );
+      this.scheduleReconnect();
     }
   }
 
@@ -166,7 +211,16 @@ export class PublicMarketDataClient {
     const reqId = this.nextReqId();
 
     return new Promise<DerivProposal>((resolve, reject) => {
-      this.pendingProposals.set(reqId, { resolve, reject });
+      const timer = setTimeout(() => {
+        const pending = this.pendingProposals.get(reqId);
+        if (!pending) {
+          return;
+        }
+        this.pendingProposals.delete(reqId);
+        pending.reject(new Error("Proposal request timed out"));
+      }, PROPOSAL_TIMEOUT_MS);
+
+      this.pendingProposals.set(reqId, { resolve, reject, timer });
 
       this.send({
         ...request,
@@ -258,6 +312,8 @@ export class PublicMarketDataClient {
   disconnect(): void {
     this.closedIntentionally = true;
     this.generation += 1;
+    this.clearReconnectTimer();
+    this.reconnectAttempt = 0;
     this.stopStaleTimer();
     const socket = this.socket;
 
@@ -270,6 +326,7 @@ export class PublicMarketDataClient {
 
     this.subscriptions.clear();
     this.desiredSymbols = [];
+    rejectPendingProposals(this.pendingProposals, "WebSocket disconnected");
 
     if (socket) {
       socket.onopen = null;
@@ -302,6 +359,8 @@ export class PublicMarketDataClient {
 
   private handleOpen(): void {
     derivLog("[Deriv] Connected");
+    this.reconnectAttempt = 0;
+    this.clearReconnectTimer();
     this.setState("connected");
     this.requestActiveSymbols();
     if (this.desiredSymbols.length > 0) {
@@ -342,7 +401,7 @@ export class PublicMarketDataClient {
     if (failedReqId !== undefined) {
       const pendingProposal = this.pendingProposals.get(failedReqId);
       if (pendingProposal) {
-        this.pendingProposals.delete(failedReqId);
+        clearPendingProposal(this.pendingProposals, failedReqId);
         pendingProposal.reject(new Error(apiError));
         return;
       }
@@ -391,7 +450,7 @@ export class PublicMarketDataClient {
       const pending = reqId == null ? undefined : this.pendingProposals.get(reqId);
 
       if (pending && reqId !== undefined) {
-        this.pendingProposals.delete(reqId);
+        clearPendingProposal(this.pendingProposals, reqId);
         pending.resolve(payload.proposal as DerivProposal);
       }
 
@@ -465,6 +524,7 @@ export class PublicMarketDataClient {
 
   private handleSocketError(): void {
     derivLog("[Deriv] WebSocket error");
+    rejectPendingProposals(this.pendingProposals, "WebSocket connection failure.");
     this.setState("error", "WebSocket connection failure.");
   }
 
@@ -478,6 +538,7 @@ export class PublicMarketDataClient {
     this.socket = null;
     this.subscriptions.clear();
     this.stopStaleTimer();
+    rejectPendingProposals(this.pendingProposals, "WebSocket closed");
 
     if (this.closedIntentionally) {
       this.setState("disconnected");
@@ -488,18 +549,39 @@ export class PublicMarketDataClient {
       ? `WebSocket closed (${event.code}: ${event.reason})`
       : `WebSocket closed (${event.code})`;
 
-    if (this.state === "connecting" || this.state === "error") {
-      this.setState("error", detail);
+    this.setState("error", detail);
+    this.scheduleReconnect();
+  }
+
+  private scheduleReconnect(): void {
+    if (this.closedIntentionally || this.reconnectTimer !== null) {
       return;
     }
 
-    this.setState("disconnected", detail);
+    if (typeof window === "undefined") {
+      return;
+    }
 
-    window.setTimeout(() => {
+    const delay = Math.min(
+      RECONNECT_BASE_DELAY_MS * 2 ** this.reconnectAttempt,
+      RECONNECT_MAX_DELAY_MS,
+    );
+    this.reconnectAttempt += 1;
+    derivLog("[Deriv] Reconnecting in", `${delay}ms`);
+
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
       if (!this.closedIntentionally) {
         this.connect();
       }
-    }, 2000);
+    }, delay);
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer !== null && typeof window !== "undefined") {
+      window.clearTimeout(this.reconnectTimer);
+    }
+    this.reconnectTimer = null;
   }
 
   private send(body: JsonRecord): void {

@@ -16,6 +16,7 @@ export type PaperTradeSignal = {
   entryDigit: number;
   confidence: number;
   payoutRatio: number;
+  quotedPayout: number;
   targetProfit?: number;
   evenOddSide?: "EVEN" | "ODD";
 };
@@ -50,6 +51,13 @@ export function openControlledPaperTrade(
     };
   }
 
+  if (signal.payoutRatio <= 0 || signal.quotedPayout <= 0) {
+    return {
+      allowed: false,
+      reason: "Live proposal quote is required",
+    };
+  }
+
   const accumulatedLoss = Math.max(0, -session.profitLoss);
 
   const recoveryStake = calculateRecoveryStake({
@@ -69,6 +77,7 @@ export function openControlledPaperTrade(
     contractType: signal.contractType,
     barrier: signal.barrier,
     stake: recovery.recoveryMode ? recoveryStake.stake : config.stake,
+    quotedPayout: signal.quotedPayout,
     entryDigit: signal.entryDigit,
   });
 
@@ -83,22 +92,21 @@ export function closeControlledPaperTrade(
   session: TradingSession,
   trade: PaperTrade,
   exitDigit: number,
-  payout: number,
-
+  now = Date.now(),
 ): { trade: PaperTrade; session: TradingSession } {
-  const evenOddSide: "EVEN" | "ODD" = trade.contractType === "DIGITODD" ? "ODD" : "EVEN";
+  if (trade.status !== "OPEN") {
+    return { trade, session };
+  }
+
+  const evenOddSide: "EVEN" | "ODD" =
+    trade.contractType === "DIGITODD" ? "ODD" : "EVEN";
   const won = strategyWins(trade.strategy, exitDigit, evenOddSide);
 
-  const settledTrade = settlePaperTrade(
-    trade,
-    exitDigit,
-    won,
-    payout,
-  );
+  const settledTrade = settlePaperTrade(trade, exitDigit, won);
 
   return {
     trade: settledTrade,
-    session: recordPaperTrade(session, settledTrade),
+    session: recordPaperTrade(session, settledTrade, now),
   };
 }
 

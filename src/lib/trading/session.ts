@@ -21,6 +21,7 @@ export function createTradingSession(): TradingSession {
 export function recordPaperTrade(
   session: TradingSession,
   trade: PaperTrade,
+  now = Date.now(),
 ): TradingSession {
   if (trade.status === "OPEN") {
     return session;
@@ -36,6 +37,6 @@ export function recordPaperTrade(
     totalPayout: session.totalPayout + trade.payout,
     profitLoss: session.profitLoss + trade.profitLoss,
     consecutiveLosses: won ? 0 : session.consecutiveLosses + 1,
-    lastLossAt: won ? session.lastLossAt : Date.now(),
+    lastLossAt: won ? null : now,
   };
 }

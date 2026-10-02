@@ -14,6 +14,7 @@ export type PaperTrade = {
   contractType: string;
   barrier?: number;
   stake: number;
+  quotedPayout: number;
   entryDigit: number;
   exitDigit?: number;
   status: PaperTradeStatus;

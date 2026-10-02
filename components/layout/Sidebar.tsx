@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { NAV_ITEMS } from "@/lib/navigation";
+import { useAfterHydration } from "@/lib/use-after-hydration";
 
 type SidebarProps = {
   open: boolean;
@@ -11,6 +12,8 @@ type SidebarProps = {
 
 export function Sidebar({ open, onClose }: SidebarProps) {
   const pathname = usePathname();
+  const hydrated = useAfterHydration();
+  const activePath = hydrated ? pathname : null;
 
   return (
     <>
@@ -44,9 +47,10 @@ export function Sidebar({ open, onClose }: SidebarProps) {
           <ul className="space-y-0.5">
             {NAV_ITEMS.map((item) => {
               const active =
-                item.href === "/"
-                  ? pathname === "/"
-                  : pathname === item.href;
+                activePath !== null &&
+                (item.href === "/"
+                  ? activePath === "/"
+                  : activePath === item.href);
 
               return (
                 <li key={item.href}>

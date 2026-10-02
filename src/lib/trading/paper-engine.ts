@@ -1,4 +1,5 @@
 import type { BotStrategy, PaperTrade } from "./types";
+import type { PaperProposalQuote } from "./proposal";
 
 export function createPaperTrade(params: {
   strategy: BotStrategy;
@@ -6,6 +7,7 @@ export function createPaperTrade(params: {
   contractType: string;
   barrier?: number;
   stake: number;
+  quotedPayout: number;
   entryDigit: number;
 }): PaperTrade {
   return {
@@ -15,6 +17,7 @@ export function createPaperTrade(params: {
     contractType: params.contractType,
     barrier: params.barrier,
     stake: params.stake,
+    quotedPayout: params.quotedPayout,
     entryDigit: params.entryDigit,
     status: "OPEN",
     payout: 0,
@@ -23,13 +26,23 @@ export function createPaperTrade(params: {
   };
 }
 
+export function applyProposalQuote(
+  trade: PaperTrade,
+  quote: PaperProposalQuote,
+): PaperTrade {
+  return {
+    ...trade,
+    stake: quote.askPrice,
+    quotedPayout: quote.payout,
+  };
+}
+
 export function settlePaperTrade(
   trade: PaperTrade,
   exitDigit: number,
   won: boolean,
-  payout: number,
 ): PaperTrade {
-  const actualPayout = won ? payout : 0;
+  const actualPayout = won ? trade.quotedPayout : 0;
 
   return {
     ...trade,

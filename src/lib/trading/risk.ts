@@ -43,6 +43,7 @@ export function canPlaceTrade(
   }
 
   if (
+    session.consecutiveLosses > 0 &&
     session.lastLossAt !== null &&
     now - session.lastLossAt < config.cooldownAfterLossMs
   ) {

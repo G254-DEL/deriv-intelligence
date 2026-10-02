@@ -123,6 +123,7 @@ export type DerivProposal = {
   ask_price?: number | string;
   payout?: number | string;
   spot?: number | string;
+  date_expiry?: number | string;
 };
 
 export type ProposalResponse = {

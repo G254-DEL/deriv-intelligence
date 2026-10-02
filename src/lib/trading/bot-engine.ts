@@ -14,6 +14,7 @@ export type BotEngineInput = {
   analysis: DigitAnalysis;
   session: TradingSession;
   payoutRatio: number;
+  quotedPayout: number;
   targetProfit?: number;
   riskConfig?: RiskConfig;
 };
@@ -31,6 +32,7 @@ export function evaluatePaperTrade(
     ...signal,
     symbol: input.symbol,
     payoutRatio: input.payoutRatio,
+    quotedPayout: input.quotedPayout,
     targetProfit: input.targetProfit,
   };
 

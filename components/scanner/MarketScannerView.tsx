@@ -3,12 +3,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import { analyzeDigitBias } from "@/src/lib/strategy/digit-bias";
-import { createTradingSignal } from "@/src/lib/trading/signal";
-import { evaluatePaperTrade } from "@/src/lib/trading/bot-engine";
 import { DEFAULT_RISK_CONFIG } from "@/src/lib/trading/risk";
-import { openControlledPaperTrade, closeControlledPaperTrade } from "@/src/lib/trading/controller";
+import {
+  closeControlledPaperTrade,
+} from "@/src/lib/trading/controller";
 import type { PaperTrade } from "@/src/lib/trading/types";
 import { createTradingSession, type TradingSession } from "@/src/lib/trading/session";
+import { quoteAndOpenPaperTrade } from "@/src/lib/trading/open-quoted-paper-trade";
 import {
   MARKET_CATEGORIES,
   MAX_LIVE_TICK_STREAMS,
@@ -23,6 +24,7 @@ import {
 
 const PAPER_PROPOSAL_CURRENCY = "USD";
 const PAPER_TARGET_PROFIT = 0.10;
+const AUTOMATIC_TRADING_ENABLED = false;
 
 const SCANNER_NOTICE =
   "The scanner will use public Deriv market-data streams. No trading orders are placed from this page.";
@@ -90,7 +92,7 @@ export function MarketScannerView() {
         }
         setConnectionState(state);
         setStatusDetail(detail ?? null);
-        if (state !== "connected") {
+        if (state === "disconnected") {
           setMarketTicks({});
           setDigitHistory({});
           lastDigitEpochRef.current = {};
@@ -128,15 +130,64 @@ export function MarketScannerView() {
         }
         lastDigitEpochRef.current[snapshot.symbol] = snapshot.epoch;
 
+        let nextHistory: number[] = [];
         setDigitHistory((current) => {
           const previous = current[snapshot.symbol] ?? [];
           const next = [...previous, digit].slice(-20);
-        digitHistoryRef.current[snapshot.symbol] = next;
+          digitHistoryRef.current[snapshot.symbol] = next;
+          nextHistory = next;
           return {
             ...current,
             [snapshot.symbol]: next,
           };
         });
+
+        if (openPaperTradeRef.current) {
+          const currentTrade = openPaperTradeRef.current;
+          if (currentTrade.symbol === snapshot.symbol) {
+            const result = closeControlledPaperTrade(
+              tradingSessionRef.current,
+              currentTrade,
+              digit,
+            );
+            tradingSessionRef.current = result.session;
+            openPaperTradeRef.current = null;
+            setTradingSession(result.session);
+            setOpenPaperTrade(null);
+          }
+        } else if (AUTOMATIC_TRADING_ENABLED) {
+          const analysis = analyzeDigitBias(nextHistory);
+          if (analysis.state === "SIGNAL") {
+            const client = clientRef.current;
+            if (!client) {
+              return;
+            }
+            void quoteAndOpenPaperTrade({
+              client,
+              symbol: snapshot.symbol,
+              analysis,
+              session: tradingSessionRef.current,
+              currency: PAPER_PROPOSAL_CURRENCY,
+              targetProfit: PAPER_TARGET_PROFIT,
+              riskConfig: DEFAULT_RISK_CONFIG,
+              inFlight: proposalRequestInFlightRef.current,
+            })
+              .then((trade) => {
+                if (!trade || !mountedRef.current || openPaperTradeRef.current) {
+                  return;
+                }
+                openPaperTradeRef.current = trade;
+                setOpenPaperTrade(trade);
+              })
+              .catch(() => {
+                if (mountedRef.current) {
+                  setStatusDetail(
+                    "Paper proposal quote failed. No paper trade was opened.",
+                  );
+                }
+              });
+          }
+        }
       },
       onTickStatus: (symbol, status) => {
         if (!mountedRef.current) {
@@ -351,7 +402,6 @@ export function MarketScannerView() {
                   const analysis = analyzeDigits(
                     digitHistory[symbol.underlying_symbol] ?? [],
                   );
-      const tradingSignal = createTradingSignal(analyzeDigitBias(digitHistory[symbol.underlying_symbol] ?? []));
 
                   return (
                     <tr
@@ -433,7 +483,7 @@ function emptyStateMessage({
   if (connectionState === "connecting") {
     return {
       title: "Connecting to Deriv market data.",
-      detail: "Active symbols will appear after the public WebSocket is connected.",
+      detail: statusDetail ?? "Retrying the public Deriv WebSocket if the connection drops.",
     };
   }
 
@@ -520,15 +570,6 @@ function parseValidDigit(value: string | number | undefined | null): number | nu
   return Number(trimmed);
 }
 
-function parseProposalNumber(value: number | string | undefined): number | null {
-  const parsed = typeof value === "number" ? value : Number(value);
-
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return null;
-  }
-
-  return parsed;
-}
 function analyzeDigits(digits: number[]): RowAnalysis {
   const analysis = analyzeDigitBias(digits);
 
@@ -582,52 +623,3 @@ function quoteForRow(
     status: "LIVE",
   };
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
