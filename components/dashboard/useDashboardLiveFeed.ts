@@ -159,9 +159,13 @@ export function useDashboardLiveFeed(): DashboardLiveFeed {
     const handle = window.setTimeout(() => {
       client.setTickSubscriptions(
         watchedSymbols.slice(0, MAX_LIVE_TICK_STREAMS),
+        "dashboard",
       );
     }, 200);
-    return () => window.clearTimeout(handle);
+    return () => {
+      window.clearTimeout(handle);
+      client.releaseTickSubscriptions("dashboard");
+    };
   }, [connectionState, watchedSymbols]);
 
   const opportunities = useMemo(() => {

@@ -89,7 +89,7 @@ export function useMarketDigitSample(count: number) {
     if (!client || connectionState !== "connected" || !symbol) {
       return;
     }
-    client.setTickSubscriptions([symbol]);
+    client.setTickSubscriptions([symbol], "digit-sample");
     lastEpochRef.current = null;
     setTicks([]);
     setLatest(null);
@@ -112,6 +112,9 @@ export function useMarketDigitSample(count: number) {
           setHistoryError("Could not load tick history. Live ticks will still fill in.");
         }
       });
+    return () => {
+      client.releaseTickSubscriptions("digit-sample");
+    };
   }, [connectionState, symbol, count]);
 
   const digits = useMemo(() => ticks.map((tick) => tick.digit), [ticks]);

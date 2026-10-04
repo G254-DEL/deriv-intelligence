@@ -21,6 +21,13 @@ export type RankedOpportunity = {
   dominantDigit: number;
   sampleSize: number;
   ready: boolean;
+  rankScore?: number;
+  probability?: number;
+  edge?: number;
+  reason?: string;
+  contractType?: string;
+  barrier?: number;
+  evenOddSide?: "EVEN" | "ODD";
 };
 
 export function opportunityFromAnalysis(
@@ -75,7 +82,9 @@ export function rankOpportunities(
     if (left.ready !== right.ready) {
       return left.ready ? -1 : 1;
     }
-    return right.confidence - left.confidence;
+    const rightScore = right.rankScore ?? right.confidence;
+    const leftScore = left.rankScore ?? left.confidence;
+    return rightScore - leftScore;
   });
 }
 

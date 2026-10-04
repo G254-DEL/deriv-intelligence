@@ -55,20 +55,26 @@ test("paper settlement uses the quoted Deriv payout, not a hardcoded ratio", () 
   assert.equal(lost.profitLoss, -2.5);
 });
 
-test("recovery stake can exceed a $1 default without a ceiling", () => {
-  const result = calculateRecoveryStake({
+test("recovery stake stays at the configured base after a loss", () => {
+  const once = calculateRecoveryStake({
     accumulatedLoss: 10,
     targetProfit: 0.1,
     payoutRatio: 0.8,
     baseStake: 1,
   });
+  const twice = calculateRecoveryStake({
+    accumulatedLoss: 20,
+    targetProfit: 0.1,
+    payoutRatio: 0.8,
+    baseStake: 1,
+  });
 
-  assert.equal(result.allowed, true);
-  assert.ok(result.stake > 1);
-  assert.equal(result.stake, Math.ceil((10.1 / 0.8) * 100) / 100);
+  assert.equal(once.allowed, true);
+  assert.equal(once.stake, 1);
+  assert.equal(twice.stake, 1);
 });
 
-test("quoteAndOpenPaperTrade sizes recovery from the live proposal then re-quotes", async () => {
+test("quoteAndOpenPaperTrade keeps the base stake after a loss", async () => {
   const requests: number[] = [];
   const session = createTradingSession();
   session.consecutiveLosses = 1;
@@ -107,11 +113,10 @@ test("quoteAndOpenPaperTrade sizes recovery from the live proposal then re-quote
   });
 
   assert.ok(trade);
-  assert.equal(requests.length, 2);
+  assert.equal(requests.length, 1);
   assert.equal(requests[0], 2);
-  assert.ok(requests[1] > 2);
-  assert.equal(trade.stake, requests[1]);
-  assert.equal(trade.quotedPayout, requests[1] * 1.8);
+  assert.equal(trade.stake, 2);
+  assert.equal(trade.quotedPayout, 2 * 1.8);
 
   const closed = closeControlledPaperTrade(session, trade, 1);
   assert.equal(closed.trade.status, "WON");
@@ -168,26 +173,26 @@ test("quoteAndOpenPaperTrade rejects invalid first proposal payloads without ope
   assert.deepEqual(session, before);
 });
 
-test("quoteAndOpenPaperTrade clears inFlight when recovery re-quote fails", async () => {
+test("a mismatched quote is re-requested at the base stake and a failed follow-up opens nothing", async () => {
   const session = createTradingSession();
-  session.consecutiveLosses = 1;
-  session.profitLoss = -5;
+  session.consecutiveLosses = 2;
+  session.profitLoss = -8;
   const before = sessionSnapshot(session);
   const inFlight: Record<string, boolean> = {};
-  let calls = 0;
+  const amounts: number[] = [];
 
   const trade = await quoteAndOpenPaperTrade({
     client: {
       async requestProposal(request) {
-        calls += 1;
-        if (calls === 1) {
+        amounts.push(request.amount);
+        if (amounts.length === 1) {
           return {
             id: "probe",
-            ask_price: request.amount,
-            payout: request.amount * 1.8,
+            ask_price: 1.25,
+            payout: 2.25,
           };
         }
-        throw new Error("recovery quote failed");
+        throw new Error("follow-up quote failed");
       },
     },
     symbol: "1HZ100V",
@@ -200,31 +205,31 @@ test("quoteAndOpenPaperTrade clears inFlight when recovery re-quote fails", asyn
   });
 
   assert.equal(trade, null);
-  assert.equal(calls, 2);
+  assert.deepEqual(amounts, [2, 2]);
   assert.equal(inFlight["1HZ100V"], false);
   assert.deepEqual(session, before);
 });
 
-test("quoteAndOpenPaperTrade returns null when recovery re-quote payload is invalid", async () => {
+test("a mismatched quote follow-up with an invalid payload opens nothing and stays at the base stake", async () => {
   const session = createTradingSession();
-  session.consecutiveLosses = 1;
-  session.profitLoss = -5;
+  session.consecutiveLosses = 2;
+  session.profitLoss = -8;
   const before = sessionSnapshot(session);
   const inFlight: Record<string, boolean> = {};
-  let calls = 0;
+  const amounts: number[] = [];
 
   const trade = await quoteAndOpenPaperTrade({
     client: {
       async requestProposal(request) {
-        calls += 1;
-        if (calls === 1) {
+        amounts.push(request.amount);
+        if (amounts.length === 1) {
           return {
             id: "probe",
-            ask_price: request.amount,
-            payout: request.amount * 1.8,
+            ask_price: 1.25,
+            payout: 2.25,
           };
         }
-        return { id: "bad-recovery", ask_price: "x", payout: "y" };
+        return { id: "bad-follow-up", ask_price: "x", payout: "y" };
       },
     },
     symbol: "1HZ100V",
@@ -236,7 +241,7 @@ test("quoteAndOpenPaperTrade returns null when recovery re-quote payload is inva
     inFlight,
   });
 
-  assert.equal(calls, 2);
+  assert.deepEqual(amounts, [2, 2]);
   assert.equal(trade, null);
   assert.equal(inFlight["1HZ100V"], false);
   assert.deepEqual(session, before);

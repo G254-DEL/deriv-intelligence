@@ -157,7 +157,10 @@ export function EntryMapsView() {
     lastEpochRef.current = null;
     setDigits([]);
     setLatestTick(null);
-    client.setTickSubscriptions([resolvedSymbol]);
+    client.setTickSubscriptions([resolvedSymbol], "entry-maps");
+    return () => {
+      client.releaseTickSubscriptions("entry-maps");
+    };
   }, [connectionState, resolvedSymbol]);
 
   const evaluation = useMemo(

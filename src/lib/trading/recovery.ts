@@ -71,23 +71,12 @@ export function calculateRecoveryStake(params: {
     };
   }
 
-  const amountToRecover = Math.max(0, accumulatedLoss) + Math.max(0, targetProfit);
-
-  const requiredStake =
-    amountToRecover > 0
-      ? amountToRecover / payoutRatio
-      : baseStake;
-
-  const stake = Math.max(
-    baseStake,
-    Math.ceil(requiredStake * 100) / 100,
-  );
+  void accumulatedLoss;
+  void targetProfit;
   return {
-    stake,
+    stake: baseStake,
     allowed: true,
-    reason: amountToRecover > 0
-      ? "Recovery stake calculated from payout"
-      : "Base stake",
+    reason: "Base stake",
   };
 }
 

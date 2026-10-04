@@ -37,7 +37,7 @@ export class DerivMarketDataClient {
   readonly publicEndpoint = DERIV_PUBLIC_WS_URL;
   private inner: PublicMarketDataClient;
   private readonly owned: boolean;
-  private readonly tickUnsubscribers = new Map<string, Unsubscribe>();
+  private readonly tickUnsubscribers = new Set<Unsubscribe>();
 
   constructor(inner?: PublicMarketDataClient) {
     if (inner) {
@@ -109,17 +109,12 @@ export class DerivMarketDataClient {
     onTick: TickHandler,
   ): Unsubscribe {
     this.assertConnected("ticks");
-    const previous = this.tickUnsubscribers.get(request.ticks);
-    previous?.();
-
     const unsubscribe = this.inner.subscribeSymbolTicks(request.ticks, onTick);
     const wrapped: Unsubscribe = () => {
       unsubscribe();
-      if (this.tickUnsubscribers.get(request.ticks) === wrapped) {
-        this.tickUnsubscribers.delete(request.ticks);
-      }
+      this.tickUnsubscribers.delete(wrapped);
     };
-    this.tickUnsubscribers.set(request.ticks, wrapped);
+    this.tickUnsubscribers.add(wrapped);
     return wrapped;
   }
 

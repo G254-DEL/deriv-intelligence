@@ -20,6 +20,15 @@ import type {
   Unsubscribe,
 } from "./types";
 import { assertAllowedPublicMarketDataRequest } from "./public-request-guard";
+import {
+  activeSymbols,
+  emptySubscriptionLedger,
+  releaseConsumer,
+  releaseOwner,
+  retainConsumer,
+  setOwnerSymbols,
+  type SubscriptionLedger,
+} from "./subscription-ledger";
 
 export type PublicMarketDataHandlers = {
   onConnectionChange?: (
@@ -151,6 +160,7 @@ export class PublicMarketDataClient {
   private readonly subscriptions = new Map<string, TickSubscription>();
   private readonly latestTicks = new Map<string, MarketTickSnapshot>();
   private desiredSymbols: string[] = [];
+  private ledger: SubscriptionLedger = emptySubscriptionLedger();
   private staleTimer: number | null = null;
   private reconnectTimer: number | null = null;
   private reconnectAttempt = 0;
@@ -253,7 +263,7 @@ export class PublicMarketDataClient {
       this.symbolTickHandlers.set(symbol, handlers);
     }
     handlers.add(onTick);
-    this.subscribeTicks(symbol);
+    this.retainSymbolConsumer(symbol);
 
     return () => {
       const current = this.symbolTickHandlers.get(symbol);
@@ -261,6 +271,7 @@ export class PublicMarketDataClient {
       if (current && current.size === 0) {
         this.symbolTickHandlers.delete(symbol);
       }
+      this.releaseSymbolConsumer(symbol);
     };
   }
 
@@ -377,24 +388,36 @@ export class PublicMarketDataClient {
     });
   }
   subscribeTicks(symbol: string): void {
-    const next = this.desiredSymbols.filter((item) => item !== symbol);
-    next.unshift(symbol);
-    this.setTickSubscriptions(next.slice(0, MAX_LIVE_TICK_STREAMS));
+    this.retainSymbolConsumer(symbol);
   }
 
-  setTickSubscriptions(symbols: string[]): void {
-    const unique: string[] = [];
-    for (const raw of symbols) {
-      const symbol = raw.trim();
-      if (!symbol || unique.includes(symbol)) {
-        continue;
-      }
-      unique.push(symbol);
-      if (unique.length >= MAX_LIVE_TICK_STREAMS) {
-        break;
-      }
-    }
+  setTickSubscriptions(symbols: string[], owner = "default", priority = 0): void {
+    this.ledger = setOwnerSymbols(this.ledger, owner, symbols, priority);
+    this.reconcileSubscriptions();
+  }
 
+  releaseTickSubscriptions(owner: string): void {
+    this.ledger = releaseOwner(this.ledger, owner);
+    this.reconcileSubscriptions();
+  }
+
+  unsubscribeTicks(): void {
+    this.ledger = emptySubscriptionLedger();
+    this.reconcileSubscriptions();
+  }
+
+  private retainSymbolConsumer(symbol: string): void {
+    this.ledger = retainConsumer(this.ledger, symbol);
+    this.reconcileSubscriptions();
+  }
+
+  private releaseSymbolConsumer(symbol: string): void {
+    this.ledger = releaseConsumer(this.ledger, symbol);
+    this.reconcileSubscriptions();
+  }
+
+  private reconcileSubscriptions(): void {
+    const unique = activeSymbols(this.ledger, MAX_LIVE_TICK_STREAMS);
     this.desiredSymbols = unique;
 
     for (const [symbol] of this.subscriptions) {
@@ -414,10 +437,6 @@ export class PublicMarketDataClient {
     }
 
     this.ensureStaleTimer();
-  }
-
-  unsubscribeTicks(): void {
-    this.setTickSubscriptions([]);
   }
 
   private requestTickStream(symbol: string): void {
@@ -472,6 +491,7 @@ export class PublicMarketDataClient {
     }
 
     this.subscriptions.clear();
+    this.ledger = emptySubscriptionLedger();
     this.desiredSymbols = [];
     rejectPendingProposals(this.pendingProposals, "WebSocket disconnected");
     rejectPendingCalls(this.pendingCalls, "WebSocket disconnected");

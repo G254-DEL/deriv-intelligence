@@ -263,10 +263,14 @@ export function MarketScannerView() {
     const handle = window.setTimeout(() => {
       client.setTickSubscriptions(
         pickLiveSymbols(rows, selectedSymbol, MAX_LIVE_TICK_STREAMS),
+        "scanner",
       );
     }, 200);
 
-    return () => window.clearTimeout(handle);
+    return () => {
+      window.clearTimeout(handle);
+      client.releaseTickSubscriptions("scanner");
+    };
   }, [connectionState, rows, selectedSymbol]);
 
   function handleWatch(symbol: string) {

@@ -225,7 +225,7 @@ test("recovery after one loss requires a stronger signal", () => {
   );
   assert.equal(strong.allowed, true);
   assert.ok(strong.trade);
-  assert.ok((strong.trade.stake ?? 0) >= RISK.stake);
+  assert.equal(strong.trade.stake, RISK.stake);
 });
 
 test("strategy rules match digit contracts without placing live orders", () => {

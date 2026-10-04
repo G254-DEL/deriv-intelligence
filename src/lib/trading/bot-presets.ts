@@ -1,3 +1,5 @@
+export type MasterRole = "router" | "entry";
+
 export type FreeBotPreset = {
   id: string;
   name: string;
@@ -5,16 +7,18 @@ export type FreeBotPreset = {
   summary: string;
   strategies: Array<"UNDER_7" | "UNDER_8" | "OVER_2" | "OVER_3" | "EVEN_ODD">;
   master: boolean;
+  masterRole?: MasterRole;
 };
 
 export const FREE_BOT_PRESETS: FreeBotPreset[] = [
   {
     id: "autoswitcher",
-    name: "Autoswitcher",
+    name: "Market Router",
     family: "MASTER",
     summary: "Master ranks volatilities and hands each specialist a market.",
     strategies: ["UNDER_7", "OVER_2", "OVER_3", "UNDER_8", "EVEN_ODD"],
     master: true,
+    masterRole: "router",
   },
   {
     id: "under-hunter",
@@ -42,11 +46,12 @@ export const FREE_BOT_PRESETS: FreeBotPreset[] = [
   },
   {
     id: "entrypoint-hunter",
-    name: "Entrypoint Hunter",
+    name: "Entry Signal Hunter",
     family: "MASTER",
     summary: "Only arms when digit-bias reaches SIGNAL on a watched market.",
     strategies: ["UNDER_7", "OVER_2", "OVER_3", "UNDER_8", "EVEN_ODD"],
     master: true,
+    masterRole: "entry",
   },
 ];
 

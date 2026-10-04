@@ -1,25 +1,37 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Card } from "@/components/ui/Card";
-import { analyzeDigitBias } from "@/src/lib/strategy/digit-bias";
-import { DEFAULT_RISK_CONFIG } from "@/src/lib/trading/risk";
+import { DEFAULT_RISK_CONFIG, canPlaceTrade } from "@/src/lib/trading/risk";
 import { closeControlledPaperTrade } from "@/src/lib/trading/controller";
-import { quoteAndOpenPaperTrade } from "@/src/lib/trading/open-quoted-paper-trade";
+import { openArmedPaperTrade } from "@/src/lib/trading/armed-paper-trade";
 import { getRecoveryDecision } from "@/src/lib/trading/recovery";
 import {
-  FREE_BOT_PRESETS,
   presetById,
   readLoadedBotId,
   writeLoadedBotId,
 } from "@/src/lib/trading/bot-presets";
+import { BotGallery } from "@/components/bots/BotGallery";
+import { FREE_BOT_GALLERY } from "@/components/bots/free-bots-catalog";
+import { ActiveBotPanel } from "@/components/bots/ActiveBotPanel";
+import { MasterControlPanel } from "@/components/bots/MasterControlPanel";
 import {
-  assignSpecialistMarkets,
-  opportunityFromAnalysis,
-  rankOpportunities,
   SPECIALIST_BOTS,
   type RankedOpportunity,
 } from "@/src/lib/trading/master-bot";
+import { decideEntry, type EntryDecision } from "@/src/lib/trading/entry-signal";
+import { routeMarkets } from "@/src/lib/trading/market-router";
+import {
+  emptyPerformanceBook,
+  recordPaperOutcome,
+  type PaperPerformanceBook,
+} from "@/src/lib/trading/performance-memory";
+import { fitForStrategy } from "@/src/lib/trading/specialist-edge";
+import {
+  gateForMasterRole,
+  paperExecutionPermitted,
+  resolveActiveMasterRole,
+  type ActiveMasterRole,
+} from "@/src/lib/trading/master-role";
 import type { BotStrategy, PaperTrade } from "@/src/lib/trading/types";
 import { createTradingSession, type TradingSession } from "@/src/lib/trading/session";
 import {
@@ -36,13 +48,7 @@ const PAPER_PROPOSAL_CURRENCY = "USD";
 const PAPER_TARGET_PROFIT = 0.1;
 const LIVE_ORDERS_ENABLED = false;
 const MASTER_STREAM_LIMIT = 16;
-
-const STATUS_DOT: Record<DerivConnectionState, string> = {
-  connected: "bg-accent",
-  connecting: "bg-warning",
-  disconnected: "bg-muted",
-  error: "bg-warning",
-};
+const PERFORMANCE_STORAGE_KEY = "deriv.intelligence.paper-performance";
 
 export function BotMonitorView() {
   const clientRef = useRef<PublicMarketDataClient | null>(null);
@@ -62,6 +68,7 @@ export function BotMonitorView() {
   });
   const excludeSymbolsRef = useRef<string[]>([]);
   const allowedStrategiesRef = useRef<Set<BotStrategy>>(new Set());
+  const masterRoleRef = useRef<ActiveMasterRole>("router");
   const [loadedBotId, setLoadedBotId] = useState("autoswitcher");
 
   const [connectionState, setConnectionState] =
@@ -79,6 +86,11 @@ export function BotMonitorView() {
   const [openPaperTrade, setOpenPaperTrade] = useState<PaperTrade | null>(null);
   const [lastClosed, setLastClosed] = useState<PaperTrade | null>(null);
   const [excludeSymbols, setExcludeSymbols] = useState<string[]>([]);
+  const [performanceBook, setPerformanceBook] = useState<PaperPerformanceBook>(
+    readPerformanceBook,
+  );
+  const performanceRef = useRef<PaperPerformanceBook>(performanceBook);
+  const entryConfidenceRef = useRef(0);
 
   useEffect(() => {
     digitHistoryRef.current = digitHistory;
@@ -99,6 +111,14 @@ export function BotMonitorView() {
   useEffect(() => {
     excludeSymbolsRef.current = excludeSymbols;
   }, [excludeSymbols]);
+
+  useEffect(() => {
+    performanceRef.current = performanceBook;
+    if (typeof sessionStorage === "undefined") {
+      return;
+    }
+    sessionStorage.setItem(PERFORMANCE_STORAGE_KEY, JSON.stringify(performanceBook));
+  }, [performanceBook]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -171,6 +191,19 @@ export function BotMonitorView() {
           setTradingSession(result.session);
           setOpenPaperTrade(null);
           setLastClosed(result.trade);
+          if (result.trade.status === "WON" || result.trade.status === "LOST") {
+            const nextBook = recordPaperOutcome(performanceRef.current, {
+              market: result.trade.symbol,
+              strategy: result.trade.strategy,
+              contractType: result.trade.contractType,
+              barrier: result.trade.barrier,
+              won: result.trade.status === "WON",
+              profitLoss: result.trade.profitLoss,
+              confidence: entryConfidenceRef.current,
+            });
+            performanceRef.current = nextBook;
+            setPerformanceBook(nextBook);
+          }
           if (result.trade.status === "LOST") {
             setExcludeSymbols((current) =>
               uniqueTail([...current, result.trade.symbol], 6),
@@ -195,11 +228,15 @@ export function BotMonitorView() {
             session: tradingSessionRef.current,
             inFlight: proposalInFlightRef.current,
             allowedStrategies: allowedStrategiesRef.current,
+            masterRole: masterRoleRef.current,
             mounted: () => mountedRef.current,
             hasOpenTrade: () => Boolean(openPaperTradeRef.current),
             onOpened: (trade) => {
               openPaperTradeRef.current = trade;
               setOpenPaperTrade(trade);
+            },
+            onArmed: (confidence) => {
+              entryConfidenceRef.current = confidence;
             },
             onQuoteError: () => {
               setStatusDetail(
@@ -229,197 +266,214 @@ export function BotMonitorView() {
       return;
     }
     const handle = window.setTimeout(() => {
-      client.setTickSubscriptions(watched.slice(0, MAX_LIVE_TICK_STREAMS));
+      client.setTickSubscriptions(
+        watched.slice(0, MAX_LIVE_TICK_STREAMS),
+        "bot-monitor",
+        1,
+      );
     }, 200);
-    return () => window.clearTimeout(handle);
+    return () => {
+      window.clearTimeout(handle);
+      client.releaseTickSubscriptions("bot-monitor");
+    };
   }, [connectionState, watched]);
 
-  const ranked = useMemo(() => {
-    const items: RankedOpportunity[] = [];
-    for (const code of watched) {
-      const meta = symbols.find((item) => item.underlying_symbol === code);
-      const opportunity = opportunityFromAnalysis(
-        code,
-        meta?.underlying_symbol_name ?? code,
-        analyzeDigitBias(digitHistory[code] ?? []),
-      );
-      if (opportunity) {
-        items.push(opportunity);
-      }
-    }
-    return rankOpportunities(items);
-  }, [digitHistory, symbols, watched]);
-
-  const assigned = useMemo(
-    () => assignSpecialistMarkets(ranked, new Set(excludeSymbols)),
-    [excludeSymbols, ranked],
+  const routed = useMemo(
+    () =>
+      routeMarkets({
+        markets: watched.map((code) => ({
+          symbol: code,
+          marketName:
+            symbols.find((item) => item.underlying_symbol === code)?.underlying_symbol_name ??
+            code,
+          digits: digitHistory[code] ?? [],
+        })),
+        performance: performanceBook,
+        excludeSymbols: new Set(excludeSymbols),
+      }),
+    [digitHistory, excludeSymbols, performanceBook, symbols, watched],
   );
+  const ranked = routed.ranked;
+  const assigned = routed.assigned;
 
   useEffect(() => {
     setLoadedBotId(readLoadedBotId());
   }, []);
 
-  const loadedPreset = presetById(loadedBotId);
+  const loadedCard = FREE_BOT_GALLERY.find((item) => item.galleryId === loadedBotId);
+  const loadedPreset = presetById(loadedCard?.presetId ?? loadedBotId);
+  const allowedStrategyList = loadedCard?.specialist
+    ? [loadedCard.specialist]
+    : loadedPreset.strategies;
+  const masterRole = resolveActiveMasterRole(loadedPreset, loadedCard?.specialist);
   assignedRef.current = assigned;
-  allowedStrategiesRef.current = new Set(loadedPreset.strategies);
+  allowedStrategiesRef.current = new Set(allowedStrategyList);
+  masterRoleRef.current = masterRole;
   const recovery = getRecoveryDecision(tradingSession);
+  const risk = canPlaceTrade(tradingSession);
+  const entryByStrategy = useMemo(() => {
+    const decisions = {} as Record<BotStrategy, EntryDecision>;
+    for (const bot of SPECIALIST_BOTS) {
+      const slot = assigned[bot.id];
+      const digits = slot ? (digitHistory[slot.symbol] ?? []) : [];
+      decisions[bot.id] = gateForMasterRole(
+        masterRole,
+        decideEntry({
+          enabled: allowedStrategyList.includes(bot.id),
+          open: openPaperTrade?.strategy === bot.id,
+          riskAllowed: risk.allowed && recovery.allowed,
+          riskReason: risk.allowed ? recovery.reason : risk.reason,
+          minimumConfidence: recovery.minimumConfidence,
+          fit: slot ? fitForStrategy(digits, bot.id) : null,
+        }),
+      );
+    }
+    return decisions;
+  }, [
+    allowedStrategyList,
+    assigned,
+    masterRole,
+    digitHistory,
+    openPaperTrade,
+    recovery.allowed,
+    recovery.minimumConfidence,
+    recovery.reason,
+    risk.allowed,
+    risk.reason,
+  ]);
+  const cooldownActive =
+    tradingSession.consecutiveLosses > 0 &&
+    tradingSession.lastLossAt !== null &&
+    Date.now() - tradingSession.lastLossAt < DEFAULT_RISK_CONFIG.cooldownAfterLossMs;
+  const marketDataLabel =
+    connectionState === "connected"
+      ? "Live"
+      : connectionState === "connecting"
+        ? "Connecting"
+        : connectionState === "error"
+          ? "Error"
+          : "Disconnected";
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-5">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted">
-            Paper bots
-          </p>
-          <h2 className="mt-1 text-xl font-semibold tracking-tight text-foreground">
-            Bot Monitor
-          </h2>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5 text-xs">
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${STATUS_DOT[connectionState]}`}
-              aria-hidden
-            />
-            <span className="font-medium text-foreground">
-              {connectionLabel(connectionState)}
-            </span>
+    <div className="mx-auto flex max-w-7xl flex-col gap-8 pb-8">
+      <header className="flex flex-col gap-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-200/80">
+              Deriv Intelligence
+            </p>
+            <h2 className="mt-1 text-3xl font-semibold tracking-tight text-foreground">
+              Free Bots
+            </h2>
+            <p className="mt-2 max-w-xl text-sm leading-6 text-muted">
+              Choose a specialist bot, load it, and let the Master coordinate the
+              market.
+            </p>
           </div>
           <button
             type="button"
             onClick={() => setPaperRunning((current) => !current)}
             disabled={connectionState !== "connected"}
-            className="rounded-md border border-border px-3 py-1.5 text-sm text-foreground disabled:text-muted"
+            className="rounded-xl border border-warning/40 bg-warning/15 px-4 py-2.5 text-sm font-medium text-foreground disabled:text-muted"
           >
             {paperRunning ? "Pause paper bots" : "Start paper bots"}
           </button>
         </div>
-      </div>
 
-      <p className="rounded-lg border border-border bg-surface px-4 py-3 text-sm leading-6 text-foreground">
-        Load a free paper bot, then start it. Autoswitcher is the Master.
-        Specialists cover Under, Over, and Even/Odd. Live buy/sell stays off.
-      </p>
+        <div className="rounded-2xl border border-warning/30 bg-warning/10 px-4 py-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-warning">
+            Paper trading
+          </p>
+          <p className="mt-1 text-sm leading-6 text-foreground">
+            Bots use live Deriv market data and paper execution. Real-money order
+            execution is disabled.
+          </p>
+        </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        {FREE_BOT_PRESETS.map((bot) => {
-          const loaded = bot.id === loadedBotId;
-          return (
-            <article
-              key={bot.id}
-              className="flex flex-col gap-3 rounded-lg border border-border bg-surface p-4"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-[10px] uppercase tracking-[0.14em] text-muted">
-                  {bot.family}
-                </p>
-                {loaded ? (
-                  <span className="text-[10px] uppercase tracking-wide text-accent">
-                    Loaded
-                  </span>
-                ) : null}
-              </div>
-              <h3 className="text-sm font-semibold text-foreground">{bot.name}</h3>
-              <p className="text-sm text-muted">{bot.summary}</p>
-              <button
-                type="button"
-                onClick={() => {
-                  writeLoadedBotId(bot.id);
-                  setLoadedBotId(bot.id);
-                }}
-                className="mt-auto rounded-md border border-border px-3 py-1.5 text-sm"
-              >
-                {loaded ? "Loaded" : "Load bot"}
-              </button>
-            </article>
-          );
-        })}
-      </div>
+        <div className="flex flex-wrap gap-2 text-xs">
+          <StatusChip
+            live={connectionState === "connected"}
+            label={`Market Data: ${marketDataLabel}`}
+          />
+          <StatusChip paper label="Trading Mode: PAPER" />
+          <StatusChip
+            live={paperRunning && connectionState === "connected"}
+            label={`Master: ${
+              paperRunning
+                ? masterRole === "router"
+                  ? "Routing"
+                  : masterRole === "entry"
+                    ? "Gating"
+                    : "Specialist"
+                : "Paused"
+            }`}
+          />
+          <StatusChip label={`Loaded Bots: ${allowedStrategyList.length}`} />
+        </div>
+      </header>
+
+      <BotGallery
+        loadedPresetId={loadedBotId}
+        cardState={(item) => {
+          const slot = item.specialist ? assigned[item.specialist] : null;
+          const entry = item.specialist ? entryByStrategy[item.specialist] : null;
+          const loaded = loadedBotId === item.galleryId;
+          return {
+            loaded,
+            status: entry?.phase ?? (loaded ? "LOADED" : "IDLE"),
+            assignedMarket: loaded ? slot?.marketName : undefined,
+            confidence:
+              loaded && slot ? `${(slot.confidence * 100).toFixed(1)}%` : undefined,
+            ready: entry?.phase === "ARMED",
+            reason: loaded ? entry?.reason ?? slot?.reason : undefined,
+          };
+        }}
+        onLoad={(galleryId) => {
+          writeLoadedBotId(galleryId);
+          setLoadedBotId(galleryId);
+        }}
+      />
 
       {statusDetail && connectionState !== "connected" ? (
         <p className="text-sm text-muted">{statusDetail}</p>
       ) : null}
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Stat label="Paper P/L" value={tradingSession.profitLoss.toFixed(2)} />
-        <Stat
-          label="Wins / Losses"
-          value={`${tradingSession.wins} / ${tradingSession.losses}`}
-        />
-        <Stat label="Mode" value={recovery.recoveryMode ? "Recovery" : "Normal"} />
-        <Stat
-          label="Open paper trade"
-          value={openPaperTrade ? openPaperTrade.strategy.replaceAll("_", " ") : "None"}
-        />
-      </div>
+      <MasterControlPanel
+        roleTitle={
+          masterRole === "router"
+            ? "Market Router"
+            : masterRole === "entry"
+              ? "Entry Signal Hunter"
+              : loadedCard?.name ?? "Specialist"
+        }
+        activityLabel={
+          masterRole === "router"
+            ? "Routing"
+            : masterRole === "entry"
+              ? "Gating"
+              : "Specialist"
+        }
+        connectionLabel={connectionLabel(connectionState)}
+        paperRunning={paperRunning}
+        recoveryReason={recovery.reason}
+        recoveryMode={recovery.recoveryMode}
+        marketsScanned={watched.length}
+        ranked={ranked}
+        assigned={assigned}
+        profitLoss={tradingSession.profitLoss}
+        wins={tradingSession.wins}
+        losses={tradingSession.losses}
+        openPaperTrade={openPaperTrade}
+      />
 
-      <Card title="Master bot" badge={connectionState === "connected" ? "Scanning" : "Offline"}>
-        <p className="mb-4 text-sm text-muted">
-          {recovery.reason}. Markets recently lost on paper are skipped until a win.
-        </p>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[640px] text-left text-sm">
-            <thead>
-              <tr className="border-b border-border text-xs uppercase tracking-[0.12em] text-muted">
-                <th className="pb-3 pr-4 font-medium">Market</th>
-                <th className="pb-3 pr-4 font-medium">Fit</th>
-                <th className="pb-3 pr-4 font-medium">Digit</th>
-                <th className="pb-3 pr-4 font-medium">Confidence</th>
-                <th className="pb-3 font-medium">Ready</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ranked.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="py-10 text-center text-sm text-muted">
-                    Waiting for synthetic tick samples.
-                  </td>
-                </tr>
-              ) : (
-                ranked.slice(0, 10).map((row) => (
-                  <tr key={`${row.symbol}-${row.strategy}`} className="border-b border-border last:border-0">
-                    <td className="py-3 pr-4 text-foreground">{row.marketName}</td>
-                    <td className="py-3 pr-4 text-foreground">
-                      {labelForStrategy(row.strategy)}
-                    </td>
-                    <td className="py-3 pr-4 font-mono text-muted">{row.dominantDigit}</td>
-                    <td className="py-3 pr-4 font-mono text-muted">
-                      {(row.confidence * 100).toFixed(1)}%
-                    </td>
-                    <td className="py-3 text-muted">{row.ready ? "SIGNAL" : "Watching"}</td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </Card>
-
-      <div className="grid gap-5 lg:grid-cols-2">
-        {SPECIALIST_BOTS.map((bot) => {
-          const slot = assigned[bot.id];
-          const tick = slot ? marketTicks[slot.symbol] : undefined;
-          return (
-            <Card
-              key={bot.id}
-              title={`${bot.label} bot`}
-              badge={slot?.ready ? "Armed" : slot ? "Watching" : "Idle"}
-            >
-              <dl className="grid gap-3 sm:grid-cols-2">
-                <Info label="Assigned market" value={slot?.marketName ?? "Waiting for fit"} />
-                <Info label="Tick" value={tick?.formattedPrice ?? "—"} />
-                <Info label="Digit" value={tick?.digit ?? "—"} />
-                <Info
-                  label="Confidence"
-                  value={
-                    slot ? `${(slot.confidence * 100).toFixed(1)}%` : "—"
-                  }
-                />
-              </dl>
-            </Card>
-          );
-        })}
-      </div>
+      <ActiveBotPanel
+        assigned={assigned}
+        marketTicks={marketTicks}
+        allowedStrategies={new Set(allowedStrategyList)}
+        openPaperTrade={openPaperTrade}
+        cooldown={cooldownActive}
+        entries={entryByStrategy}
+      />
 
       {lastClosed ? (
         <p className="text-sm text-muted">
@@ -437,6 +491,28 @@ export function BotMonitorView() {
   );
 }
 
+function StatusChip({
+  label,
+  live = false,
+  paper = false,
+}: {
+  label: string;
+  live?: boolean;
+  paper?: boolean;
+}) {
+  return (
+    <span className="inline-flex items-center gap-2 rounded-full border border-border bg-[#151a22] px-3 py-1.5 text-foreground">
+      <span
+        className={`h-1.5 w-1.5 rounded-full ${
+          paper ? "bg-warning" : live ? "bg-accent" : "bg-muted"
+        }`}
+        aria-hidden
+      />
+      {label}
+    </span>
+  );
+}
+
 function openAssignedPaperTrade(params: {
   symbol: string;
   history: number[];
@@ -446,40 +522,53 @@ function openAssignedPaperTrade(params: {
   session: TradingSession;
   inFlight: Record<string, boolean>;
   allowedStrategies: ReadonlySet<BotStrategy>;
+  masterRole: ActiveMasterRole;
   mounted: () => boolean;
   hasOpenTrade: () => boolean;
   onOpened: (trade: PaperTrade) => void;
+  onArmed: (confidence: number) => void;
   onQuoteError: () => void;
 }) {
   const { client, symbol, history } = params;
   if (!client) {
     return;
   }
-  const analysis = analyzeDigitBias(history);
-  const opportunity = opportunityFromAnalysis(symbol, symbol, analysis);
-  if (!opportunity?.ready) {
+  const slot = Object.values(params.assigned).find(
+    (item) => item?.symbol === symbol && params.allowedStrategies.has(item.strategy),
+  );
+  if (!slot || params.excluded.includes(symbol)) {
     return;
   }
-  if (!params.allowedStrategies.has(opportunity.strategy)) {
-    return;
-  }
-  const slot = params.assigned[opportunity.strategy];
-  if (!slot || slot.symbol !== symbol) {
-    return;
-  }
-  if (params.excluded.includes(symbol)) {
+  const fit = fitForStrategy(history, slot.strategy);
+  const risk = canPlaceTrade(params.session);
+  const recovery = getRecoveryDecision(params.session);
+  const entry = decideEntry({
+    enabled: true,
+    open: params.hasOpenTrade(),
+    riskAllowed: risk.allowed && recovery.allowed,
+    riskReason: risk.allowed ? recovery.reason : risk.reason,
+    minimumConfidence: recovery.minimumConfidence,
+    fit,
+  });
+  if (!fit || !paperExecutionPermitted(params.masterRole, entry.phase)) {
     return;
   }
 
-  void quoteAndOpenPaperTrade({
+  void openArmedPaperTrade({
     client,
     symbol,
-    analysis,
+    fit,
     session: params.session,
     currency: PAPER_PROPOSAL_CURRENCY,
     targetProfit: PAPER_TARGET_PROFIT,
     riskConfig: DEFAULT_RISK_CONFIG,
     inFlight: params.inFlight,
+  }).then((trade) => {
+    if (!trade) {
+      return null;
+    }
+    params.onArmed(fit.probability);
+    return trade;
   })
     .then((trade) => {
       if (!trade || !params.mounted() || params.hasOpenTrade()) {
@@ -494,30 +583,23 @@ function openAssignedPaperTrade(params: {
     });
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <article className="rounded-lg border border-border bg-surface px-4 py-4">
-      <p className="text-xs font-medium uppercase tracking-[0.12em] text-muted">
-        {label}
-      </p>
-      <p className="mt-3 text-2xl font-semibold tracking-tight text-foreground">
-        {value}
-      </p>
-    </article>
-  );
-}
-
-function Info({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md border border-border bg-surface-raised px-3 py-3">
-      <dt className="text-[11px] uppercase tracking-[0.12em] text-muted">{label}</dt>
-      <dd className="mt-1 font-mono text-sm text-foreground">{value}</dd>
-    </div>
-  );
-}
-
-function labelForStrategy(strategy: BotStrategy): string {
-  return SPECIALIST_BOTS.find((item) => item.id === strategy)?.label ?? strategy;
+function readPerformanceBook(): PaperPerformanceBook {
+  if (typeof sessionStorage === "undefined") {
+    return emptyPerformanceBook();
+  }
+  try {
+    const raw = sessionStorage.getItem(PERFORMANCE_STORAGE_KEY);
+    if (!raw) {
+      return emptyPerformanceBook();
+    }
+    const parsed = JSON.parse(raw) as PaperPerformanceBook;
+    if (!parsed || !Array.isArray(parsed.records)) {
+      return emptyPerformanceBook();
+    }
+    return { records: parsed.records.slice(0, 100) };
+  } catch {
+    return emptyPerformanceBook();
+  }
 }
 
 function uniqueTail(values: string[], max: number): string[] {

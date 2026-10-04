@@ -79,14 +79,16 @@ export function openControlledPaperTrade(
     symbol: signal.symbol,
     contractType: signal.contractType,
     barrier: signal.barrier,
-    stake: recovery.recoveryMode ? recoveryStake.stake : config.stake,
+    stake: recoveryStake.stake,
     quotedPayout: signal.quote.payout,
     entryDigit: signal.entryDigit,
   });
 
   return {
     allowed: true,
-    reason: recovery.recoveryMode ? recoveryStake.reason : "Paper trade opened",
+    reason: recovery.recoveryMode
+      ? "Paper trade opened at the base stake during recovery"
+      : "Paper trade opened",
     trade,
   };
 }
