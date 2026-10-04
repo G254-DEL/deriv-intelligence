@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { NAV_ITEMS } from "@/lib/navigation";
 import { useAfterHydration } from "@/lib/use-after-hydration";
+import { MarketDataStatus } from "@/components/layout/MarketDataStatus";
 
 type SidebarProps = {
   open: boolean;
@@ -77,7 +78,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
         </nav>
 
         <div className="border-t border-border px-5 py-4 text-xs text-muted">
-          Demo UI · no live connection
+          <MarketDataStatus compact />
         </div>
       </aside>
     </>

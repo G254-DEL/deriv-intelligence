@@ -1,11 +1,12 @@
 import { DERIV_PUBLIC_WS_URL, MAX_LIVE_TICK_STREAMS, TICK_STALE_AFTER_MS } from "./constants";
-import { classifyMarketCategory } from "./classify-market";
+import { classifyMarketCategory, isPublicDigitMarket } from "./classify-market";
 import { TickHistoryStore } from "./tick-history";
 import {
   decimalPlacesFromPipSize,
   extractLastDisplayedDigit,
 } from "../digits/extract-last-digit";
 import type {
+  ContractsForRequest,
   DerivActiveSymbol,
   DerivConnectionState,
   DerivTick,
@@ -13,6 +14,10 @@ import type {
   MarketTickStatus,
   DerivProposal,
   ProposalRequest,
+  Tick,
+  TickHandler,
+  TicksHistoryRequest,
+  Unsubscribe,
 } from "./types";
 import { assertAllowedPublicMarketDataRequest } from "./public-request-guard";
 
@@ -83,6 +88,39 @@ function rejectPendingProposals(
   }
 }
 
+type PendingCall = {
+  resolve: (payload: JsonRecord) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout> | null;
+};
+
+function clearPendingCall(
+  pendingCalls: Map<number, PendingCall>,
+  reqId: number,
+): void {
+  const pending = pendingCalls.get(reqId);
+  if (!pending) {
+    return;
+  }
+  if (pending.timer !== null) {
+    clearTimeout(pending.timer);
+  }
+  pendingCalls.delete(reqId);
+}
+
+function rejectPendingCalls(
+  pendingCalls: Map<number, PendingCall>,
+  reason: string,
+): void {
+  for (const [reqId, pending] of pendingCalls) {
+    if (pending.timer !== null) {
+      clearTimeout(pending.timer);
+    }
+    pendingCalls.delete(reqId);
+    pending.reject(new Error(reason));
+  }
+}
+
 function derivLog(message: string, extra?: unknown): void {
   if (extra !== undefined) {
     console.info(message, extra);
@@ -99,6 +137,12 @@ export class PublicMarketDataClient {
   private detail: string | undefined;
   private reqId = 1;
   private readonly pendingProposals = new Map<number, PendingProposal>();
+  private readonly pendingCalls = new Map<number, PendingCall>();
+  private readonly symbolTickHandlers = new Map<string, Set<TickHandler>>();
+  private readonly connectionWaiters: Array<{
+    resolve: () => void;
+    reject: (error: Error) => void;
+  }> = [];
   private handlers: PublicMarketDataHandlers;
   private generation = 0;
   private closedIntentionally = false;
@@ -130,6 +174,94 @@ export class PublicMarketDataClient {
 
   getTickHistory(symbol: string) {
     return this.tickHistory.get(symbol);
+  }
+
+  getCachedSymbols(): DerivActiveSymbol[] {
+    return this.cachedSymbols;
+  }
+
+  getLatestTicks(): ReadonlyMap<string, MarketTickSnapshot> {
+    return this.latestTicks;
+  }
+
+  waitForConnected(timeoutMs = 15000): Promise<void> {
+    if (this.state === "connected" && this.canSend()) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const index = this.connectionWaiters.indexOf(waiter);
+        if (index >= 0) {
+          this.connectionWaiters.splice(index, 1);
+        }
+        reject(new Error("Timed out connecting to Deriv market data"));
+      }, timeoutMs);
+
+      const waiter = {
+        resolve: () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        reject: (error: Error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      };
+
+      this.connectionWaiters.push(waiter);
+    });
+  }
+
+  async fetchActiveSymbols(
+    productType: "brief" | "full" = "brief",
+  ): Promise<DerivActiveSymbol[]> {
+    const payload = await this.requestJson({
+      active_symbols: productType,
+    });
+    const symbols = parseActiveSymbols(findActiveSymbols(payload));
+    this.cachedSymbols = symbols;
+    this.handlers.onActiveSymbols?.(symbols);
+    return symbols;
+  }
+
+  async requestTicksHistory(request: TicksHistoryRequest): Promise<Tick[]> {
+    const payload = await this.requestJson({
+      ticks_history: request.ticks_history,
+      end: request.end,
+      style: request.style ?? "ticks",
+      ...(request.start === undefined ? {} : { start: request.start }),
+      ...(request.count === undefined ? {} : { count: request.count }),
+    });
+    return parseTicksHistory(payload, request.ticks_history);
+  }
+
+  async requestContractsFor(request: ContractsForRequest): Promise<unknown> {
+    const payload = await this.requestJson({
+      contracts_for: request.contracts_for,
+      ...(request.product_type === undefined
+        ? {}
+        : { product_type: request.product_type }),
+    });
+    return payload.contracts_for ?? payload;
+  }
+
+  subscribeSymbolTicks(symbol: string, onTick: TickHandler): Unsubscribe {
+    let handlers = this.symbolTickHandlers.get(symbol);
+    if (!handlers) {
+      handlers = new Set();
+      this.symbolTickHandlers.set(symbol, handlers);
+    }
+    handlers.add(onTick);
+    this.subscribeTicks(symbol);
+
+    return () => {
+      const current = this.symbolTickHandlers.get(symbol);
+      current?.delete(onTick);
+      if (current && current.size === 0) {
+        this.symbolTickHandlers.delete(symbol);
+      }
+    };
   }
 
   connect(): void {
@@ -342,6 +474,8 @@ export class PublicMarketDataClient {
     this.subscriptions.clear();
     this.desiredSymbols = [];
     rejectPendingProposals(this.pendingProposals, "WebSocket disconnected");
+    rejectPendingCalls(this.pendingCalls, "WebSocket disconnected");
+    this.rejectConnectionWaiters(new Error("WebSocket disconnected"));
 
     if (socket) {
       socket.onopen = null;
@@ -420,6 +554,12 @@ export class PublicMarketDataClient {
         pendingProposal.reject(new Error(apiError));
         return;
       }
+      const pendingCall = this.pendingCalls.get(failedReqId);
+      if (pendingCall) {
+        clearPendingCall(this.pendingCalls, failedReqId);
+        pendingCall.reject(new Error(apiError));
+        return;
+      }
     }
 
     const failedSymbol = readFailedTickSymbol(payload);
@@ -455,10 +595,23 @@ export class PublicMarketDataClient {
         });
       }
       this.handlers.onActiveSymbols?.(symbols);
+      this.settlePendingCall(readNumber(payload.req_id), payload);
       return;
     }
 
     const msgType = typeof payload.msg_type === "string" ? payload.msg_type : "";
+
+    if (msgType === "history" || isRecord(payload.history)) {
+      if (this.settlePendingCall(readNumber(payload.req_id), payload)) {
+        return;
+      }
+    }
+
+    if (msgType === "contracts_for" || payload.contracts_for !== undefined) {
+      if (this.settlePendingCall(readNumber(payload.req_id), payload)) {
+        return;
+      }
+    }
 
     if (msgType === "proposal" && isRecord(payload.proposal)) {
       const reqId = readNumber(payload.req_id);
@@ -534,12 +687,14 @@ export class PublicMarketDataClient {
       this.handlers.onTick?.(tick);
       this.handlers.onMarketTick?.(snapshot);
       this.handlers.onTickStatus?.(tick.symbol, "live");
+      this.dispatchSymbolTick(tick);
     }
   }
 
   private handleSocketError(): void {
     derivLog("[Deriv] WebSocket error");
     rejectPendingProposals(this.pendingProposals, "WebSocket connection failure.");
+    rejectPendingCalls(this.pendingCalls, "WebSocket connection failure.");
     this.setState("error", "WebSocket connection failure.");
   }
 
@@ -554,8 +709,10 @@ export class PublicMarketDataClient {
     this.subscriptions.clear();
     this.stopStaleTimer();
     rejectPendingProposals(this.pendingProposals, "WebSocket closed");
+    rejectPendingCalls(this.pendingCalls, "WebSocket closed");
 
     if (this.closedIntentionally) {
+      this.rejectConnectionWaiters(new Error("WebSocket disconnected"));
       this.setState("disconnected");
       return;
     }
@@ -612,6 +769,83 @@ export class PublicMarketDataClient {
     this.socket.send(JSON.stringify(body));
   }
 
+  private requestJson(body: JsonRecord): Promise<JsonRecord> {
+    assertAllowedPublicMarketDataRequest(body);
+
+    if (!this.canSend()) {
+      return Promise.reject(new Error("Deriv WebSocket is not connected"));
+    }
+
+    const reqId = this.nextReqId();
+    const payload = { ...body, req_id: reqId };
+
+    return new Promise<JsonRecord>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const pending = this.pendingCalls.get(reqId);
+        if (!pending) {
+          return;
+        }
+        this.pendingCalls.delete(reqId);
+        pending.reject(new Error("Market-data request timed out"));
+      }, PROPOSAL_TIMEOUT_MS);
+
+      this.pendingCalls.set(reqId, { resolve, reject, timer });
+      this.send(payload);
+    });
+  }
+
+  private settlePendingCall(
+    reqId: number | undefined,
+    payload: JsonRecord,
+  ): boolean {
+    if (reqId === undefined) {
+      return false;
+    }
+    const pending = this.pendingCalls.get(reqId);
+    if (!pending) {
+      return false;
+    }
+    clearPendingCall(this.pendingCalls, reqId);
+    pending.resolve(payload);
+    return true;
+  }
+
+  private resolveConnectionWaiters(): void {
+    const waiters = this.connectionWaiters.splice(0);
+    for (const waiter of waiters) {
+      waiter.resolve();
+    }
+  }
+
+  private rejectConnectionWaiters(error: Error): void {
+    const waiters = this.connectionWaiters.splice(0);
+    for (const waiter of waiters) {
+      waiter.reject(error);
+    }
+  }
+
+  private dispatchSymbolTick(tick: DerivTick): void {
+    const handlers = this.symbolTickHandlers.get(tick.symbol);
+    if (!handlers || handlers.size === 0) {
+      return;
+    }
+
+    const quote =
+      typeof tick.quote === "number" ? tick.quote : Number(tick.quote);
+    if (!Number.isFinite(quote)) {
+      return;
+    }
+
+    const mapped: Tick = {
+      symbol: tick.symbol,
+      quote,
+      epoch: tick.epoch,
+    };
+    for (const handler of handlers) {
+      handler(mapped);
+    }
+  }
+
   private canSend(): boolean {
     return this.socket?.readyState === WebSocket.OPEN;
   }
@@ -625,6 +859,9 @@ export class PublicMarketDataClient {
     this.state = state;
     this.detail = detail;
     this.handlers.onConnectionChange?.(state, detail);
+    if (state === "connected") {
+      this.resolveConnectionWaiters();
+    }
     if (state === "error" && detail) {
       this.handlers.onError?.(detail);
     }
@@ -694,8 +931,43 @@ export class PublicMarketDataClient {
 }
 
 let sharedClient: PublicMarketDataClient | null = null;
-let sharedRefs = 0;
 let sharedReleaseTimer: number | null = null;
+const sharedHandlers = new Set<PublicMarketDataHandlers>();
+
+function fanOutHandlers(): PublicMarketDataHandlers {
+  return {
+    onConnectionChange: (state, detail) => {
+      for (const handler of sharedHandlers) {
+        handler.onConnectionChange?.(state, detail);
+      }
+    },
+    onActiveSymbols: (symbols) => {
+      for (const handler of sharedHandlers) {
+        handler.onActiveSymbols?.(symbols);
+      }
+    },
+    onTick: (tick) => {
+      for (const handler of sharedHandlers) {
+        handler.onTick?.(tick);
+      }
+    },
+    onMarketTick: (snapshot) => {
+      for (const handler of sharedHandlers) {
+        handler.onMarketTick?.(snapshot);
+      }
+    },
+    onTickStatus: (symbol, status, detail) => {
+      for (const handler of sharedHandlers) {
+        handler.onTickStatus?.(symbol, status, detail);
+      }
+    },
+    onError: (message) => {
+      for (const handler of sharedHandlers) {
+        handler.onError?.(message);
+      }
+    },
+  };
+}
 
 /**
  * Keeps one public market-data socket across React Strict Mode’s
@@ -709,22 +981,28 @@ export function retainPublicMarketData(
     sharedReleaseTimer = null;
   }
 
+  sharedHandlers.add(handlers);
+
   if (!sharedClient) {
-    sharedClient = new PublicMarketDataClient(handlers);
+    sharedClient = new PublicMarketDataClient(fanOutHandlers());
     sharedClient.connect();
   } else {
-    sharedClient.setHandlers(handlers);
+    sharedClient.setHandlers(fanOutHandlers());
     sharedClient.connect();
   }
 
   const client = sharedClient;
-  sharedRefs += 1;
 
   return {
     client,
     release: () => {
-      sharedRefs = Math.max(0, sharedRefs - 1);
-      if (sharedRefs > 0 || !sharedClient) {
+      sharedHandlers.delete(handlers);
+      if (sharedHandlers.size > 0) {
+        sharedClient?.setHandlers(fanOutHandlers());
+        return;
+      }
+
+      if (!sharedClient) {
         return;
       }
 
@@ -737,7 +1015,7 @@ export function retainPublicMarketData(
 
       sharedReleaseTimer = window.setTimeout(() => {
         sharedReleaseTimer = null;
-        if (sharedRefs === 0 && sharedClient === session) {
+        if (sharedHandlers.size === 0 && sharedClient === session) {
           session.disconnect();
           sharedClient = null;
         }
@@ -768,7 +1046,7 @@ export function parseActiveSymbols(value: unknown): DerivActiveSymbol[] {
 
   for (const item of value) {
     const parsed = parseActiveSymbol(item);
-    if (parsed) {
+    if (parsed && isPublicDigitMarket(parsed)) {
       symbols.push(parsed);
     }
   }
@@ -828,6 +1106,32 @@ export function parseTick(value: unknown): DerivTick | null {
     pip_size: readNumber(value.pip_size),
     id: readString(value.id),
   };
+}
+
+export function parseTicksHistory(payload: unknown, symbol: string): Tick[] {
+  if (!isRecord(payload) || !isRecord(payload.history)) {
+    return [];
+  }
+
+  const prices = payload.history.prices;
+  const times = payload.history.times;
+  if (!Array.isArray(prices) || !Array.isArray(times)) {
+    return [];
+  }
+
+  const ticks: Tick[] = [];
+  const length = Math.min(prices.length, times.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const quote = Number(prices[index]);
+    const epoch = Number(times[index]);
+    if (!Number.isFinite(quote) || !Number.isFinite(epoch)) {
+      continue;
+    }
+    ticks.push({ symbol, quote, epoch });
+  }
+
+  return ticks;
 }
 
 function findActiveSymbols(payload: JsonRecord): unknown {

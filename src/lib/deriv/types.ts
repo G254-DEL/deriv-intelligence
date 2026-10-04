@@ -43,7 +43,11 @@ export type MarketTickSnapshot = {
   receivedAt: number;
 };
 
-export type DerivConnectionStatus = "not_connected" | "connecting" | "connected";
+export type DerivConnectionStatus =
+  | "not_connected"
+  | "connecting"
+  | "connected"
+  | "error";
 
 export type ActiveSymbolsRequest = {
   active_symbols: "brief" | "full";

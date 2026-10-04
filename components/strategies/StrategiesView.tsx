@@ -187,9 +187,10 @@ export function StrategiesView() {
       </div>
 
       <p className="rounded-lg border border-border bg-surface px-4 py-3 text-sm leading-6 text-foreground">
-        Saved strategies are stored in this browser only. They configure paper
-        analysis rules and never place real-money trades. Automatic trading
-        stays off.
+        Saved strategies pin a home synthetic market and a contract type
+        (Under 7, Over 2, Over 3, Under 8, Even/Odd). The Master bot on Bot
+        Monitor can reassign markets from live digit samples. They configure
+        paper analysis only and never place real-money trades.
       </p>
 
       {notice ? (
@@ -227,7 +228,7 @@ export function StrategiesView() {
                 />
               </label>
               <label className="block">
-                <span className={labelClass}>Market</span>
+                <span className={labelClass}>Home market</span>
                 <select
                   value={draft.market}
                   onChange={(event) => selectMarket(event.target.value)}

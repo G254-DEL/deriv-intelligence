@@ -35,3 +35,31 @@ export function classifyMarketCategory(
 
   return null;
 }
+
+const EXCLUDED_SYMBOL_PREFIXES = ["frx", "otc_", "wld", "cry"];
+
+/**
+ * Digit scanner markets only. Forex, OTC indices, baskets, and other
+ * non-synthetic symbols error on the public tick stream and are omitted.
+ */
+export function isPublicDigitMarket(symbol: DerivActiveSymbol): boolean {
+  const code = symbol.underlying_symbol.trim();
+  if (!code) {
+    return false;
+  }
+
+  const lower = code.toLowerCase();
+  if (EXCLUDED_SYMBOL_PREFIXES.some((prefix) => lower.startsWith(prefix))) {
+    return false;
+  }
+
+  if (symbol.category && symbol.category !== "synthetic_index") {
+    return false;
+  }
+
+  if (symbol.category === "synthetic_index") {
+    return true;
+  }
+
+  return /^(r_|1hz|boom|crash|jd|vol|stprng)/i.test(code);
+}

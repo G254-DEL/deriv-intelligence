@@ -1,11 +1,26 @@
 import { Card } from "@/components/ui/Card";
-import { UI_PREVIEW_LABEL, botStatus } from "@/lib/demo-data";
+import { connectionLabel, type DerivConnectionState } from "@/src/lib/deriv";
 
-export function BotStatusPanel() {
+type BotStatusPanelProps = {
+  live: boolean;
+  connectionState: DerivConnectionState;
+};
+
+export function BotStatusPanel({ live, connectionState }: BotStatusPanelProps) {
+  const items = [
+    {
+      label: "Public market data",
+      value: connectionLabel(connectionState).replace("Deriv Market Data: ", ""),
+    },
+    { label: "Paper Trading", value: "OFF" },
+    { label: "Automatic Trading", value: "OFF" },
+    { label: "Live orders", value: "OFF" },
+  ];
+
   return (
-    <Card title="Bot Status" badge={UI_PREVIEW_LABEL}>
+    <Card title="Bot Status" badge={live ? "Live" : "Offline"}>
       <ul className="divide-y divide-border rounded-md border border-border">
-        {botStatus.map((item) => (
+        {items.map((item) => (
           <li
             key={item.label}
             className="flex items-center justify-between gap-4 px-3 py-3 text-sm"
@@ -16,8 +31,8 @@ export function BotStatusPanel() {
         ))}
       </ul>
       <p className="mt-4 text-sm text-muted">
-        Trading and automation are disabled in this UI milestone. No orders can
-        be placed from this screen.
+        Automatic trading and live buy/sell stay disabled. Use Market Scanner for
+        quotes and manual paper trades after the public stream is connected.
       </p>
     </Card>
   );

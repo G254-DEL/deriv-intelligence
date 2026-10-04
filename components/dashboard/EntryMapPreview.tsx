@@ -1,16 +1,41 @@
 import { Card } from "@/components/ui/Card";
-import { DEMO_LABEL, entryMapPreview } from "@/lib/demo-data";
+import type { DashboardOpportunity } from "@/components/dashboard/useDashboardLiveFeed";
 
-const rows = [
-  { label: "Strategy", value: entryMapPreview.strategy },
-  { label: "Trigger Digit", value: entryMapPreview.triggerDigit },
-  { label: "Confirmation", value: entryMapPreview.confirmation },
-  { label: "Current State", value: entryMapPreview.currentState },
-];
+type EntryMapPreviewProps = {
+  live: boolean;
+  featured: DashboardOpportunity | null;
+};
 
-export function EntryMapPreview() {
+export function EntryMapPreview({ live, featured }: EntryMapPreviewProps) {
+  const rows = featured
+    ? [
+        { label: "Market", value: featured.market },
+        { label: "Strategy", value: featured.strategy },
+        {
+          label: "Trigger Digit",
+          value:
+            featured.dominantDigit !== null
+              ? String(featured.dominantDigit)
+              : "Collecting",
+        },
+        {
+          label: "Confirmation",
+          value:
+            featured.dominantFrequency !== null
+              ? `${(featured.dominantFrequency * 100).toFixed(1)}% of ${featured.sampleSize} ticks`
+              : `${featured.sampleSize}/10 ticks`,
+        },
+        { label: "Current State", value: featured.entryState },
+      ]
+    : [
+        { label: "Strategy", value: "Digit Bias" },
+        { label: "Trigger Digit", value: "—" },
+        { label: "Confirmation", value: "Waiting for ticks" },
+        { label: "Current State", value: live ? "No featured market" : "Offline" },
+      ];
+
   return (
-    <Card title="Entry Map" badge={DEMO_LABEL}>
+    <Card title="Entry Map" badge={live ? "Live" : "Offline"}>
       <dl className="grid gap-3 sm:grid-cols-2">
         {rows.map((row) => (
           <div
@@ -25,8 +50,8 @@ export function EntryMapPreview() {
         ))}
       </dl>
       <p className="mt-4 text-sm leading-6 text-muted">
-        Entry maps define the conditions that must occur before a strategy can
-        generate an entry signal. They do not guarantee the next market outcome.
+        Entry maps show digit-bias conditions on the public feed. They do not
+        guarantee the next tick and do not place orders.
       </p>
     </Card>
   );

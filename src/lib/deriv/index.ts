@@ -1,11 +1,12 @@
 export { DERIV_MARKET_DATA_METHODS, DERIV_PUBLIC_WS_URL, MARKET_CATEGORIES, MAX_LIVE_TICK_STREAMS } from "./constants";
 export type { DerivMarketDataMethod, MarketCategoryId } from "./constants";
-export { DerivMarketDataClient, derivMarketData } from "./client";
+export { DerivMarketDataClient, derivMarketData, mapConnectionStatus } from "./client";
 export { DerivNotConnectedError } from "./errors";
-export { classifyMarketCategory } from "./classify-market";
+export { classifyMarketCategory, isPublicDigitMarket } from "./classify-market";
 export {
   PublicMarketDataClient,
   connectionLabel,
+  parseTicksHistory,
   retainPublicMarketData,
 } from "./public-market-data";
 export type { PublicMarketDataHandlers } from "./public-market-data";
