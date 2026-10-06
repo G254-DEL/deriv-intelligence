@@ -131,6 +131,10 @@ function readRisk(value: unknown): RiskConfig {
       value.maxTradesPerSession,
       DEFAULT_RISK_CONFIG.maxTradesPerSession,
     ),
+    maxOpenPaperPositions: readPositiveInt(
+      value.maxOpenPaperPositions,
+      DEFAULT_RISK_CONFIG.maxOpenPaperPositions,
+    ),
     cooldownAfterLossMs: readNonNegativeNumber(
       value.cooldownAfterLossMs,
       DEFAULT_RISK_CONFIG.cooldownAfterLossMs,

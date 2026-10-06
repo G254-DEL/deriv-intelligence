@@ -3,6 +3,7 @@ export type RiskConfig = {
   maxConsecutiveLosses: number;
   maxSessionLoss: number;
   maxTradesPerSession: number;
+  maxOpenPaperPositions: number;
   cooldownAfterLossMs: number;
 };
 
@@ -11,6 +12,7 @@ export const DEFAULT_RISK_CONFIG: RiskConfig = {
   maxConsecutiveLosses: 3,
   maxSessionLoss: 10,
   maxTradesPerSession: 50,
+  maxOpenPaperPositions: 3,
   cooldownAfterLossMs: 5000,
 };
 
@@ -29,6 +31,14 @@ export function canPlaceTrade(
 ): RiskDecision {
   if (config.stake <= 0) {
     return { allowed: false, reason: "Stake must be greater than zero" };
+  }
+
+  const openLimit = config.maxOpenPaperPositions ?? DEFAULT_RISK_CONFIG.maxOpenPaperPositions;
+  if (openPositions >= openLimit) {
+    return {
+      allowed: false,
+      reason: `Open paper position limit reached (${openLimit})`,
+    };
   }
 
   const reservedTrades = session.totalTrades + Math.max(0, openPositions);

@@ -36,6 +36,7 @@ import {
 import { explainEntry } from "@/src/lib/research/replay";
 import { getStrategy, listStrategies } from "@/src/lib/research/registry";
 import type { StrategyDefinition } from "@/src/lib/research/strategy-spec";
+import { readLivePaperBook, summarizeLivePaper } from "@/src/lib/research/forward";
 import { LIVE_ORDERS_ENABLED } from "@/src/lib/trading/live-orders";
 
 type ReplayBundle = {
@@ -193,6 +194,7 @@ export function StrategyLabView() {
         Observation, signal, and contract outcome stay separate from monetary P/L. This page does
         not place orders. {LAB_STORAGE_NOTE}
       </p>
+      <LivePaperEvidence />
 
       <div className="grid gap-2 sm:grid-cols-3">
         <Field label="Strategy">
@@ -671,6 +673,24 @@ function MetricGrid(props: { title: string; performance: ContractPerformance }) 
         <Line label="Skipped" value={String(props.performance.skipped)} />
       </div>
     </div>
+  );
+}
+
+function LivePaperEvidence() {
+  const [summary, setSummary] = useState(() => summarizeLivePaper(readLivePaperBook()));
+  useEffect(() => {
+    const refresh = () => setSummary(summarizeLivePaper(readLivePaperBook()));
+    refresh();
+    const handle = window.setInterval(refresh, 2000);
+    return () => window.clearInterval(handle);
+  }, []);
+  const profit =
+    summary.profitLoss === null ? "unavailable" : summary.profitLoss.toFixed(2);
+  return (
+    <p className="text-xs leading-5 text-muted">
+      Completed Bot Monitor paper trades, read only: {summary.trades} settled, {summary.wins} wins,{" "}
+      {summary.losses} losses, simulated P/L {profit}. Strategy Lab does not start or route those trades.
+    </p>
   );
 }
 

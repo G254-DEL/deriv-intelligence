@@ -45,9 +45,11 @@ import {
   recordPaperOutcome,
   type PaperPerformanceBook,
 } from "@/src/lib/trading/performance-memory";
+import { simulatedResultLabel } from "@/src/lib/trading/paper-engine";
 import { canPlaceTrade, DEFAULT_RISK_CONFIG } from "@/src/lib/trading/risk";
 import { getRecoveryDecision } from "@/src/lib/trading/recovery";
 import {
+  applyPaperSlotLimits,
   evaluateAssignmentEntries,
   mayOpenPaperTrade,
   routerTableRows,
@@ -67,6 +69,7 @@ import {
   type RuntimeState,
 } from "@/src/lib/trading/runtime-session";
 import { createTradingSession, type TradingSession } from "@/src/lib/trading/session";
+import { recordScanNotes, summarizeScan } from "@/src/lib/trading/scan-journal";
 import { fitForStrategy, MIN_DIGIT_SAMPLE } from "@/src/lib/trading/specialist-edge";
 import {
   openLivePaperRecord,
@@ -94,6 +97,7 @@ type RouterModel = {
   qualified: number;
   assignmentCount: number;
   rows: RouterTableRow[];
+  slots: Set<string>;
   ranked: RouterOpportunity[];
   assignments: Record<string, RouterOpportunity>;
   assigned: Record<BotStrategy, RouterOpportunity | null>;
@@ -116,6 +120,7 @@ function emptyRouterModel(): RouterModel {
     qualified: 0,
     assignmentCount: 0,
     rows: [],
+    slots: new Set<string>(),
     ranked: [],
     assignments: {},
     assigned: EMPTY_ASSIGNED,
@@ -140,7 +145,6 @@ export function BotMonitorView() {
   const ticksRef = useRef<Record<string, MarketTickSnapshot>>({});
   const modelRef = useRef<RouterModel>(emptyRouterModel());
   const sampleReadyRef = useRef<Set<string>>(new Set());
-  const qualifiedKeyRef = useRef("");
   const discoveryCountRef = useRef(-1);
   const publishTimerRef = useRef<number | null>(null);
   const performanceRef = useRef<PaperPerformanceBook>(readPerformanceBook());
@@ -160,6 +164,7 @@ export function BotMonitorView() {
   const [tradingSession, setTradingSession] = useState<TradingSession>(createTradingSession);
   const [openPositions, setOpenPositions] = useState<PaperTrade[]>([]);
   const [lastClosed, setLastClosed] = useState<PaperTrade | null>(null);
+  const [settledTrades, setSettledTrades] = useState<PaperTrade[]>([]);
   const [performanceBook, setPerformanceBook] = useState<PaperPerformanceBook>(
     performanceRef.current,
   );
@@ -205,6 +210,15 @@ export function BotMonitorView() {
           minimumConfidence: recovery.minimumConfidence,
         })
       : {};
+    const limited = applyPaperSlotLimits(
+      routerTableRows({
+        assignments: routed.assignments,
+        entries,
+        openSymbols,
+      }),
+      openSymbols,
+      DEFAULT_RISK_CONFIG.maxOpenPaperPositions,
+    );
     const model: RouterModel = {
       discovered: markets.length,
       subscribed: active && connectionRef.current === "connected" ? markets.length : 0,
@@ -213,11 +227,8 @@ export function BotMonitorView() {
       ).length,
       qualified: routed.ranked.length,
       assignmentCount: Object.keys(routed.assignments).length,
-      rows: routerTableRows({
-        assignments: routed.assignments,
-        entries,
-        openSymbols,
-      }),
+      rows: limited.rows,
+      slots: limited.slots,
       ranked: routed.ranked,
       assignments: routed.assignments,
       assigned: routed.assigned,
@@ -232,49 +243,14 @@ export function BotMonitorView() {
 
   function journalRouter(model: RouterModel) {
     let state = runtimeRef.current;
-    const qualifiedKey = model.ranked
-      .map((item) => `${item.rank}:${item.symbol}:${item.strategy}`)
-      .join("|");
-    if (qualifiedKey !== qualifiedKeyRef.current) {
-      qualifiedKeyRef.current = qualifiedKey;
-      if (model.ranked.length > 0) {
-        const top = model.ranked[0];
-        state = noteRuntime(
-          state,
-          "OPPORTUNITY_QUALIFIED",
-          `${model.qualified} qualified market/specialist pairs.`,
-          Date.now(),
-        );
-        state = noteRuntime(
-          state,
-          "ROUTER_RANK_UPDATED",
-          `#1 ${top.symbol} ${top.strategy} score ${(top.rankScore ?? 0).toFixed(4)}`,
-          Date.now(),
-        );
-      }
-    }
-    for (const [symbol, slot] of Object.entries(model.assignments)) {
-      state = noteRuntime(
-        state,
-        "SPECIALIST_ASSIGNED",
-        `${slot.strategy} assigned → ${symbol}`,
-        Date.now(),
-      );
-    }
-    for (const [symbol, entry] of Object.entries(model.entries)) {
-      const kind =
-        entry.phase === "ARMED"
-          ? "ENTRY_ARMED"
-          : entry.phase === "SIGNAL"
-            ? "ENTRY_SIGNAL"
-            : entry.phase === "WATCHING"
-              ? "ENTRY_WATCHING"
-              : null;
-      if (!kind) {
-        continue;
-      }
-      state = noteRuntime(state, kind, `${symbol} ${entry.phase}`, Date.now());
-    }
+    state = recordScanNotes(
+      state,
+      summarizeScan({
+        discovered: model.discovered,
+        rows: model.rows,
+      }),
+      Date.now(),
+    );
     if (state !== runtimeRef.current) {
       commitRuntime(state);
     }
@@ -402,6 +378,7 @@ export function BotMonitorView() {
           );
         }
         setLastClosed(result.trade);
+        setSettledTrades((current) => [result.trade!, ...current].slice(0, 12));
         publish(true);
       } else {
         publish(false);
@@ -431,6 +408,9 @@ export function BotMonitorView() {
     const assignment = model.assignments[symbol];
     const entry = model.entries[symbol];
     if (!assignment || !entry) {
+      return;
+    }
+    if (!model.slots.has(symbol)) {
       return;
     }
     if (
@@ -768,7 +748,6 @@ export function BotMonitorView() {
       tradingSessionRef.current = fresh;
       setTradingSession(fresh);
       discoveryCountRef.current = -1;
-      qualifiedKeyRef.current = "";
       next = noteRuntime(
         next,
         "MARKET_DISCOVERY_STARTED",
@@ -930,6 +909,7 @@ export function BotMonitorView() {
           qualified={routerModel.qualified}
           assignments={routerModel.assignmentCount}
           openPositions={openPositions.length}
+          maxOpen={DEFAULT_RISK_CONFIG.maxOpenPaperPositions}
           rows={routerModel.rows}
         />
       ) : null}
@@ -965,10 +945,61 @@ export function BotMonitorView() {
         entries={entryByStrategy}
       />
 
+      <section className="overflow-hidden rounded-2xl border border-border bg-[#141922]">
+        <div className="border-b border-border px-4 py-3">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-cyan-200">
+            Paper transactions
+          </p>
+          <p className="mt-1 text-xs text-muted">
+            Simulated from proposal quotes. Missing quote economics stay unavailable.
+          </p>
+        </div>
+        <div className="overflow-x-auto px-4 py-3">
+          <table className="w-full min-w-[720px] text-left text-xs">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-[0.1em] text-muted">
+                <th className="pb-2 pr-3 font-medium">Market</th>
+                <th className="pb-2 pr-3 font-medium">Strategy</th>
+                <th className="pb-2 pr-3 font-medium">Contract</th>
+                <th className="pb-2 pr-3 font-medium">Entry</th>
+                <th className="pb-2 pr-3 font-medium">Exit</th>
+                <th className="pb-2 pr-3 font-medium">Stake</th>
+                <th className="pb-2 pr-3 font-medium">Result</th>
+                <th className="pb-2 font-medium">Simulated P/L</th>
+              </tr>
+            </thead>
+            <tbody>
+              {openPositions.length === 0 && settledTrades.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="py-4 text-muted">
+                    No paper positions yet.
+                  </td>
+                </tr>
+              ) : (
+                [...openPositions, ...settledTrades].map((trade) => (
+                  <tr key={trade.id} className="border-t border-border">
+                    <td className="py-2 pr-3 text-foreground">{trade.symbol}</td>
+                    <td className="py-2 pr-3 text-foreground">{trade.strategy}</td>
+                    <td className="py-2 pr-3 text-muted">
+                      {trade.contractType}
+                      {trade.barrier !== undefined ? ` ${trade.barrier}` : ""}
+                    </td>
+                    <td className="py-2 pr-3 font-mono text-muted">{trade.entryDigit}</td>
+                    <td className="py-2 pr-3 font-mono text-muted">{trade.exitDigit ?? "—"}</td>
+                    <td className="py-2 pr-3 font-mono text-muted">{trade.stake.toFixed(2)}</td>
+                    <td className="py-2 pr-3 text-foreground">{trade.status}</td>
+                    <td className="py-2 font-mono text-foreground">{simulatedResultLabel(trade)}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       {lastClosed ? (
         <p className="text-sm text-muted">
-          Last paper result: {lastClosed.status} on {lastClosed.symbol} (
-          {lastClosed.profitLoss.toFixed(2)})
+          Last paper result: {lastClosed.status} on {lastClosed.symbol} ({simulatedResultLabel(lastClosed)})
         </p>
       ) : null}
 

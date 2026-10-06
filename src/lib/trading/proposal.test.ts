@@ -20,6 +20,7 @@ const PAPER_RISK = {
   maxConsecutiveLosses: 3,
   maxSessionLoss: 50,
   maxTradesPerSession: 50,
+  maxOpenPaperPositions: 3,
   cooldownAfterLossMs: 0,
 };
 
@@ -107,6 +108,7 @@ test("quoteAndOpenPaperTrade keeps the base stake after a loss", async () => {
       maxConsecutiveLosses: 3,
       maxSessionLoss: 50,
       maxTradesPerSession: 50,
+      maxOpenPaperPositions: 3,
       cooldownAfterLossMs: 0,
     },
     inFlight: {},

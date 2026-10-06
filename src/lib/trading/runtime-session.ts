@@ -39,6 +39,7 @@ export type JournalKind =
   | "ENTRY_WATCHING"
   | "ENTRY_SIGNAL"
   | "ENTRY_ARMED"
+  | "ENTRY_BLOCKED"
   | "PAPER_TRADE_OPENED"
   | "PAPER_TRADE_SETTLED";
 
@@ -85,7 +86,7 @@ export type RuntimeControls = {
   clearEmergency: boolean;
 };
 
-const JOURNAL_LIMIT = 200;
+export const JOURNAL_LIMIT = 200;
 
 /** Runtime cooldown cannot be shorter than 5 seconds. There is no maximum. */
 export const MIN_COOLDOWN_SECONDS = 5;
@@ -147,6 +148,47 @@ export function selectCooldownDuration(
     accepted: true,
     reason: "Cooldown duration selected.",
   };
+}
+
+export function activityLabel(kind: JournalKind, message = ""): string {
+  switch (kind) {
+    case "MARKET_DISCOVERY_STARTED":
+    case "MARKET_DISCOVERY_COMPLETE":
+    case "MARKET_SUBSCRIBED":
+    case "ROUTER_SCANNING":
+    case "SAMPLE_READY":
+      return "MARKET SCANNED";
+    case "OPPORTUNITY_QUALIFIED":
+    case "ROUTER_RANK_UPDATED":
+    case "SPECIALIST_ASSIGNED":
+      return "CANDIDATE RANKED";
+    case "ENTRY_SIGNAL":
+    case "ENTRY_ARMED":
+    case "ENTRY_HUNTER_ACTIVE":
+      return "SIGNAL DETECTED";
+    case "ENTRY_WATCHING":
+    case "ENTRY_BLOCKED":
+      return "ENTRY BLOCKED";
+    case "PAPER_TRADE_OPENED":
+      return "PAPER TRADE OPENED";
+    case "PAPER_TRADE_SETTLED":
+      return /won/i.test(message) ? "WIN" : /lost/i.test(message) ? "LOSS" : "PAPER TRADE SETTLED";
+    case "COOLDOWN_STARTED":
+      return "COOLDOWN STARTED";
+    case "COOLDOWN_EXPIRED":
+    case "COOLDOWN_CANCELLED":
+      return "COOLDOWN";
+    case "SESSION_PAUSED":
+      return "PAUSED";
+    case "SESSION_RESUMED":
+      return "RESUMED";
+    case "SESSION_STARTED":
+      return "RUN";
+    case "EMERGENCY_STOP_ACTIVATED":
+    case "EMERGENCY_STOP_CLEARED":
+    case "SESSION_STOPPED":
+      return "STOPPED";
+  }
 }
 
 export function entriesAllowed(phase: RuntimePhase): boolean {

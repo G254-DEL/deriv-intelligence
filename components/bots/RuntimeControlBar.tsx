@@ -1,5 +1,6 @@
 import type { PaperTrade } from "@/src/lib/trading/types";
 import {
+  activityLabel,
   formatClock,
   formatDuration,
   runtimeControls,
@@ -128,6 +129,10 @@ export function RuntimeControlBar({
         <Stat label="Session trades" value={String(stats.trades)} />
         <Stat label="Wins" value={String(stats.wins)} />
         <Stat label="Losses" value={String(stats.losses)} />
+        <Stat
+          label="Win rate"
+          value={stats.trades === 0 ? "—" : `${Math.round((stats.wins / stats.trades) * 100)}%`}
+        />
         <Stat label="Session P/L" value={stats.profitLoss.toFixed(2)} />
       </dl>
       <div className="mt-4 max-h-36 overflow-y-auto rounded-xl border border-border bg-[#0e131a] px-3 py-2">
@@ -135,9 +140,12 @@ export function RuntimeControlBar({
           <p className="text-sm text-muted">Runtime journal is empty.</p>
         ) : (
           <ul className="space-y-1 text-sm text-foreground">
-            {state.journal.slice(-8).map((event) => (
+            {state.journal.slice(-12).map((event) => (
               <li key={`${event.at}-${event.kind}-${event.message}`}>
                 <span className="mr-2 font-mono text-xs text-muted">{formatClock(event.at)}</span>
+                <span className="mr-2 text-[11px] uppercase tracking-[0.08em] text-cyan-200">
+                  {activityLabel(event.kind, event.message)}
+                </span>
                 {event.message}
               </li>
             ))}

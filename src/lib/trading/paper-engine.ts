@@ -37,6 +37,20 @@ export function applyProposalQuote(
   };
 }
 
+export function simulatedResultLabel(trade: {
+  status: string;
+  quotedPayout: number;
+  profitLoss: number;
+}): string {
+  if (trade.status === "OPEN") {
+    return "open";
+  }
+  if (!Number.isFinite(trade.quotedPayout) || trade.quotedPayout <= 0) {
+    return "unavailable";
+  }
+  return trade.profitLoss.toFixed(2);
+}
+
 export function settlePaperTrade(
   trade: PaperTrade,
   exitDigit: number,

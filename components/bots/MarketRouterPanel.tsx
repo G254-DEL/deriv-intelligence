@@ -7,6 +7,7 @@ export function MarketRouterPanel({
   qualified,
   assignments,
   openPositions,
+  maxOpen,
   rows,
 }: {
   discovered: number;
@@ -15,6 +16,7 @@ export function MarketRouterPanel({
   qualified: number;
   assignments: number;
   openPositions: number;
+  maxOpen: number;
   rows: RouterTableRow[];
 }) {
   return (
@@ -24,7 +26,7 @@ export function MarketRouterPanel({
           Market Router
         </p>
         <p className="mt-1 text-sm text-muted">
-          Live qualified market and specialist rankings. A row is an assignment, not a trade.
+          Ranked by edge, sample, persistence, and recent paper results. A favorable digit run is not a profit claim. Open paper slots: {openPositions}/{maxOpen}, filled by rank.
         </p>
       </div>
       <div className="grid gap-3 p-5 sm:grid-cols-2 xl:grid-cols-3">
@@ -45,13 +47,14 @@ export function MarketRouterPanel({
               <th className="pb-3 pr-3 font-medium">Prob</th>
               <th className="pb-3 pr-3 font-medium">Edge</th>
               <th className="pb-3 pr-3 font-medium">Sample</th>
-              <th className="pb-3 font-medium">State</th>
+              <th className="pb-3 pr-3 font-medium">State</th>
+              <th className="pb-3 font-medium">Evidence</th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={7} className="py-8 text-center text-sm text-muted">
+                <td colSpan={8} className="py-8 text-center text-sm text-muted">
                   Collecting samples. Unqualified markets are not ranked.
                 </td>
               </tr>
@@ -60,7 +63,6 @@ export function MarketRouterPanel({
                 <tr
                   key={`${row.symbol}-${row.strategy}`}
                   className="border-b border-border last:border-0"
-                  title={`${row.reason}. Baseline ${(row.fairProbability * 100).toFixed(1)}%. Adjustment ${row.performanceAdjustment.toFixed(3)}. Score ${row.score.toFixed(4)}.`}
                 >
                   <td className="py-3 pr-3 font-mono text-foreground">{row.rank}</td>
                   <td className="py-3 pr-3 text-foreground">{row.symbol}</td>
@@ -73,7 +75,8 @@ export function MarketRouterPanel({
                     {(row.edge * 100).toFixed(1)}%
                   </td>
                   <td className="py-3 pr-3 font-mono text-muted">{row.sampleSize}</td>
-                  <td className="py-3 text-muted">{row.state}</td>
+                  <td className="py-3 pr-3 text-muted">{row.state}</td>
+                  <td className="max-w-xs py-3 text-xs leading-5 text-muted">{row.reason}</td>
                 </tr>
               ))
             )}

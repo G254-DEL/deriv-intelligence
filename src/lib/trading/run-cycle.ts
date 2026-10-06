@@ -48,6 +48,8 @@ export function routerCannotExecute(): false {
   return false;
 }
 
+export type PipelineState = "WATCHING" | "SIGNAL" | "BLOCKED" | "PAPER";
+
 export type RouterTableRow = {
   rank: number;
   symbol: string;
@@ -60,9 +62,26 @@ export type RouterTableRow = {
   sampleSize: number;
   performanceAdjustment: number;
   score: number;
-  state: string;
+  state: PipelineState;
+  slotEligible: boolean;
   reason: string;
 };
+
+export function pipelineState(entry: EntryDecision | undefined, open: boolean): PipelineState {
+  if (open || entry?.phase === "PAPER_TRADE_OPEN") {
+    return "PAPER";
+  }
+  if (!entry || entry.phase === "IDLE") {
+    return "WATCHING";
+  }
+  if (entry.phase === "ARMED" || entry.phase === "SIGNAL") {
+    return "SIGNAL";
+  }
+  if (entry.phase === "WATCHING" && /insufficient sample/i.test(entry.reason)) {
+    return "WATCHING";
+  }
+  return "BLOCKED";
+}
 
 const SPECIALIST_LABEL: Record<BotStrategy, string> = {
   UNDER_7: "Under 7",
@@ -81,9 +100,16 @@ export function routerTableRows(params: {
     .sort((left, right) => (right.rankScore ?? 0) - (left.rankScore ?? 0) || (left.symbol < right.symbol ? -1 : 1))
     .map((item, index) => {
       const entry = params.entries[item.symbol];
-      const state = params.openSymbols.has(item.symbol)
-        ? "PAPER_TRADE_OPEN"
-        : entry?.phase ?? "WATCHING";
+      const open = params.openSymbols.has(item.symbol);
+      const state = pipelineState(entry, open);
+      const score = item.rankScore ?? 0;
+      const evidence = rankingEvidence(
+        item.reason,
+        score,
+        item.edge ?? 0,
+        item.sampleSize,
+        item.performanceAdjustment,
+      );
       return {
         rank: index + 1,
         symbol: item.symbol,
@@ -95,12 +121,48 @@ export function routerTableRows(params: {
         edge: item.edge ?? 0,
         sampleSize: item.sampleSize,
         performanceAdjustment: item.performanceAdjustment,
-        score: item.rankScore ?? 0,
+        score,
         state,
-        reason:
-          item.rank === 1 || index === 0
-            ? "strongest qualified opportunity"
-            : item.reason ?? "Qualified opportunity",
+        slotEligible: entry?.phase === "ARMED" && entry.armed && !open,
+        reason: state === "BLOCKED" && entry ? `${entry.reason}. ${evidence}` : evidence,
       };
     });
+}
+
+export function applyPaperSlotLimits(
+  rows: RouterTableRow[],
+  openSymbols: ReadonlySet<string>,
+  maxOpen: number,
+): { rows: RouterTableRow[]; slots: Set<string> } {
+  const room = Math.max(0, maxOpen - openSymbols.size);
+  const chosen = rows
+    .filter((row) => row.slotEligible)
+    .sort((left, right) => left.rank - right.rank)
+    .slice(0, room);
+  const slots = new Set(chosen.map((row) => row.symbol));
+  return {
+    slots,
+    rows: rows.map((row) => {
+      if (!row.slotEligible || slots.has(row.symbol)) {
+        return row;
+      }
+      return {
+        ...row,
+        state: "BLOCKED",
+        slotEligible: false,
+        reason: `Open paper slots are full (${maxOpen}). Higher-ranked markets are ahead.`,
+      };
+    }),
+  };
+}
+
+function rankingEvidence(
+  evidence: string | undefined,
+  score: number,
+  edge: number,
+  sampleSize: number,
+  performanceAdjustment: number,
+): string {
+  const base = evidence && evidence.length > 0 ? evidence : "Qualified on rolling digit evidence";
+  return `${base}. Score ${score.toFixed(4)} from edge ${edge.toFixed(4)}, sample ${sampleSize}, performance adjustment ${performanceAdjustment.toFixed(3)}.`;
 }
