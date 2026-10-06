@@ -1,4 +1,6 @@
-﻿export type StrategyState = "COLLECTING" | "MONITORING" | "SIGNAL";
+﻿import { buildDigitDistribution } from "./digit-distribution";
+
+export type StrategyState = "COLLECTING" | "MONITORING" | "SIGNAL";
 
 export type DigitAnalysis = {
   strategy: "Digit Bias";
@@ -21,16 +23,9 @@ export function analyzeDigitBias(digits: number[]): DigitAnalysis {
     };
   }
 
-  const counts = Array(10).fill(0) as number[];
-
-  for (const digit of digits) {
-    if (Number.isInteger(digit) && digit >= 0 && digit <= 9) {
-      counts[digit]++;
-    }
-  }
-
-  const dominantDigit = counts.indexOf(Math.max(...counts));
-  const dominantFrequency = counts[dominantDigit] / sampleSize;
+  const distribution = buildDigitDistribution(digits);
+  const dominantDigit = distribution.hottestDigit ?? 0;
+  const dominantFrequency = (distribution.counts[dominantDigit] ?? 0) / sampleSize;
 
   return {
     strategy: "Digit Bias",

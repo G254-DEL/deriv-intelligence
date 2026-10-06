@@ -131,6 +131,9 @@ function rejectPendingCalls(
 }
 
 function derivLog(message: string, extra?: unknown): void {
+  if (process.env.NODE_ENV === "production") {
+    return;
+  }
   if (extra !== undefined) {
     console.info(message, extra);
   } else {
@@ -301,7 +304,7 @@ export class PublicMarketDataClient {
         ? `Reconnecting to Deriv market data (attempt ${this.reconnectAttempt})…`
         : undefined,
     );
-    derivLog("[Deriv] Connecting...", this.endpoint);
+    derivLog("[Deriv] socket opening", this.endpoint);
 
     try {
       const socket = new WebSocket(this.endpoint);
@@ -527,13 +530,15 @@ export class PublicMarketDataClient {
   }
 
   private handleOpen(): void {
-    derivLog("[Deriv] Connected");
+    derivLog("[Deriv] socket opened", this.endpoint);
     this.reconnectAttempt = 0;
     this.clearReconnectTimer();
     this.setState("connected");
     this.requestActiveSymbols();
+    this.subscriptions.clear();
+    this.reconcileSubscriptions();
     if (this.desiredSymbols.length > 0) {
-      this.setTickSubscriptions(this.desiredSymbols);
+      derivLog("[Deriv] subscription restoration", [...this.desiredSymbols]);
     }
     this.ensureStaleTimer();
   }
@@ -593,7 +598,7 @@ export class PublicMarketDataClient {
         this.handlers.onTickStatus?.(failedSymbol, "error", apiError);
         return;
       }
-      derivLog("[Deriv] WebSocket error", apiError);
+      derivLog("[Deriv] API error", apiError);
       this.handlers.onError?.(apiError);
       return;
     }
@@ -700,10 +705,6 @@ export class PublicMarketDataClient {
         id: tick.id,
       });
 
-      derivLog("[Deriv] Tick received:", tick.symbol);
-      derivLog("[Deriv] Current price:", snapshot.formattedPrice);
-      derivLog("[Deriv] Current digit:", snapshot.digit);
-
       this.handlers.onTick?.(tick);
       this.handlers.onMarketTick?.(snapshot);
       this.handlers.onTickStatus?.(tick.symbol, "live");
@@ -712,14 +713,14 @@ export class PublicMarketDataClient {
   }
 
   private handleSocketError(): void {
-    derivLog("[Deriv] WebSocket error");
+    derivLog("[Deriv] socket error", "WebSocket connection failure.");
     rejectPendingProposals(this.pendingProposals, "WebSocket connection failure.");
     rejectPendingCalls(this.pendingCalls, "WebSocket connection failure.");
     this.setState("error", "WebSocket connection failure.");
   }
 
   private handleClose(event: CloseEvent): void {
-    derivLog("[Deriv] WebSocket closed", {
+    derivLog("[Deriv] socket close", {
       code: event.code,
       reason: event.reason || "(none)",
       intentional: this.closedIntentionally,
@@ -759,7 +760,10 @@ export class PublicMarketDataClient {
       RECONNECT_MAX_DELAY_MS,
     );
     this.reconnectAttempt += 1;
-    derivLog("[Deriv] Reconnecting in", `${delay}ms`);
+    derivLog("[Deriv] reconnect attempt", {
+      attempt: this.reconnectAttempt,
+      delayMs: delay,
+    });
 
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;

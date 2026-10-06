@@ -1,3 +1,4 @@
+import { buildDigitDistribution } from "../strategy/digit-distribution";
 import type { BotStrategy } from "./types";
 
 export const MIN_DIGIT_SAMPLE = 10;
@@ -24,32 +25,60 @@ export type SpecialistFit = {
   reason: string;
 };
 
-export function evaluateSpecialists(digits: number[]): SpecialistFit[] {
-  const valid = digits.filter(
-    (digit) => Number.isInteger(digit) && digit >= 0 && digit <= 9,
-  );
-  const sampleSize = valid.length;
-  const under7 = share(valid, (digit) => digit < 7);
-  const under8 = share(valid, (digit) => digit < 8);
-  const over2 = share(valid, (digit) => digit > 2);
-  const over3 = share(valid, (digit) => digit > 3);
-  const even = share(valid, (digit) => digit % 2 === 0);
-  const odd = sampleSize === 0 ? 0 : 1 - even;
+export type EdgeThresholds = {
+  minimumSampleSize: number;
+  minimumEdge: number;
+};
+
+export function evaluateSpecialists(
+  digits: number[],
+  thresholds: EdgeThresholds = {
+    minimumSampleSize: MIN_DIGIT_SAMPLE,
+    minimumEdge: MIN_EDGE,
+  },
+): SpecialistFit[] {
+  const distribution = buildDigitDistribution(digits);
+  const sampleSize = distribution.sampleSize;
+  const under7 = countShare(distribution.counts, sampleSize, (digit) => digit < 7);
+  const under8 = countShare(distribution.counts, sampleSize, (digit) => digit < 8);
+  const over2 = countShare(distribution.counts, sampleSize, (digit) => digit > 2);
+  const over3 = countShare(distribution.counts, sampleSize, (digit) => digit > 3);
+  const even = sampleSize === 0 ? 0 : distribution.evenCount / sampleSize;
+  const odd = sampleSize === 0 ? 0 : distribution.oddCount / sampleSize;
 
   return [
-    barrierFit("UNDER_7", "DIGITUNDER", 7, under7, sampleSize),
-    barrierFit("UNDER_8", "DIGITUNDER", 8, under8, sampleSize),
-    barrierFit("OVER_2", "DIGITOVER", 2, over2, sampleSize),
-    barrierFit("OVER_3", "DIGITOVER", 3, over3, sampleSize),
-    parityFit(even, odd, sampleSize),
+    barrierFit("UNDER_7", "DIGITUNDER", 7, under7, sampleSize, thresholds),
+    barrierFit("UNDER_8", "DIGITUNDER", 8, under8, sampleSize, thresholds),
+    barrierFit("OVER_2", "DIGITOVER", 2, over2, sampleSize, thresholds),
+    barrierFit("OVER_3", "DIGITOVER", 3, over3, sampleSize, thresholds),
+    parityFit(even, odd, sampleSize, thresholds),
   ];
 }
 
 export function fitForStrategy(
   digits: number[],
   strategy: BotStrategy,
+  thresholds?: EdgeThresholds,
 ): SpecialistFit | null {
-  return evaluateSpecialists(digits).find((fit) => fit.strategy === strategy) ?? null;
+  return (
+    evaluateSpecialists(digits, thresholds).find((fit) => fit.strategy === strategy) ??
+    null
+  );
+}
+
+export function digitMatchesFit(digit: number, fit: SpecialistFit): boolean {
+  switch (fit.strategy) {
+    case "UNDER_7":
+      return digit < 7;
+    case "UNDER_8":
+      return digit < 8;
+    case "OVER_2":
+      return digit > 2;
+    case "OVER_3":
+      return digit > 3;
+    case "EVEN_ODD":
+      return fit.evenOddSide === "ODD" ? digit % 2 === 1 : digit % 2 === 0;
+  }
 }
 
 function barrierFit(
@@ -58,10 +87,12 @@ function barrierFit(
   barrier: number,
   probability: number,
   sampleSize: number,
+  thresholds: EdgeThresholds,
 ): SpecialistFit {
   const fairProbability = FAIR_PROBABILITY[strategy];
   const edge = probability - fairProbability;
-  const qualified = sampleSize >= MIN_DIGIT_SAMPLE && edge >= MIN_EDGE;
+  const qualified =
+    sampleSize >= thresholds.minimumSampleSize && edge >= thresholds.minimumEdge;
   return {
     strategy,
     contractType,
@@ -73,17 +104,24 @@ function barrierFit(
     qualified,
     reason: qualified
       ? `${contractType} ${barrier} probability ${(probability * 100).toFixed(1)}%`
-      : sampleSize < MIN_DIGIT_SAMPLE
+      : sampleSize < thresholds.minimumSampleSize
         ? "Insufficient sample"
         : "Edge below the live threshold",
   };
 }
 
-function parityFit(even: number, odd: number, sampleSize: number): SpecialistFit {
+function parityFit(
+  even: number,
+  odd: number,
+  sampleSize: number,
+  thresholds: EdgeThresholds,
+): SpecialistFit {
   const evenEdge = even - FAIR_PROBABILITY.EVEN_ODD;
   const oddEdge = odd - FAIR_PROBABILITY.EVEN_ODD;
-  const evenQualified = sampleSize >= MIN_DIGIT_SAMPLE && evenEdge >= MIN_EDGE;
-  const oddQualified = sampleSize >= MIN_DIGIT_SAMPLE && oddEdge >= MIN_EDGE;
+  const evenQualified =
+    sampleSize >= thresholds.minimumSampleSize && evenEdge >= thresholds.minimumEdge;
+  const oddQualified =
+    sampleSize >= thresholds.minimumSampleSize && oddEdge >= thresholds.minimumEdge;
   const chooseEven = evenQualified && even >= odd;
   const chooseOdd = oddQualified && odd > even;
   const qualified = chooseEven || chooseOdd;
@@ -91,7 +129,7 @@ function parityFit(even: number, odd: number, sampleSize: number): SpecialistFit
   const edge = chooseOdd ? oddEdge : evenEdge;
 
   let reason = "Neither even nor odd has sufficient bias";
-  if (sampleSize < MIN_DIGIT_SAMPLE) {
+  if (sampleSize < thresholds.minimumSampleSize) {
     reason = "Insufficient sample";
   } else if (chooseEven) {
     reason = `DIGITEVEN probability ${(even * 100).toFixed(1)}%`;
@@ -112,9 +150,19 @@ function parityFit(even: number, odd: number, sampleSize: number): SpecialistFit
   };
 }
 
-function share(digits: number[], predicate: (digit: number) => boolean): number {
-  if (digits.length === 0) {
+function countShare(
+  counts: number[],
+  sampleSize: number,
+  predicate: (digit: number) => boolean,
+): number {
+  if (sampleSize === 0) {
     return 0;
   }
-  return digits.filter(predicate).length / digits.length;
+  let matches = 0;
+  for (let digit = 0; digit < counts.length; digit += 1) {
+    if (predicate(digit)) {
+      matches += counts[digit] ?? 0;
+    }
+  }
+  return matches / sampleSize;
 }

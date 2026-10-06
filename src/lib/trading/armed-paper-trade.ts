@@ -23,6 +23,8 @@ export async function openArmedPaperTrade(params: {
   targetProfit: number;
   riskConfig?: RiskConfig;
   inFlight: Record<string, boolean>;
+  entryDigit?: number;
+  accept?: (trade: PaperTrade) => boolean;
 }): Promise<PaperTrade | null> {
   const riskConfig = params.riskConfig ?? DEFAULT_RISK_CONFIG;
   if (!params.fit.qualified || params.inFlight[params.symbol] || riskConfig.stake <= 0) {
@@ -53,7 +55,7 @@ export async function openArmedPaperTrade(params: {
         contractType: params.fit.contractType,
         barrier: params.fit.barrier,
         evenOddSide: params.fit.evenOddSide,
-        entryDigit: params.fit.barrier ?? 0,
+        entryDigit: params.entryDigit ?? params.fit.barrier ?? 0,
         confidence: params.fit.probability,
         quote,
         targetProfit: params.targetProfit,
@@ -63,7 +65,14 @@ export async function openArmedPaperTrade(params: {
     if (!opened.allowed || !opened.trade) {
       return null;
     }
-    return applyProposalQuote(opened.trade, quote);
+    const trade: PaperTrade = {
+      ...applyProposalQuote(opened.trade, quote),
+      proposalId: proposal.id,
+    };
+    if (params.accept && !params.accept(trade)) {
+      return null;
+    }
+    return trade;
   } catch {
     return null;
   } finally {

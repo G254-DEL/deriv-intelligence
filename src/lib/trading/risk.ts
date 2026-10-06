@@ -25,12 +25,14 @@ export function canPlaceTrade(
   session: TradingSession,
   config: RiskConfig = DEFAULT_RISK_CONFIG,
   now = Date.now(),
+  openPositions = 0,
 ): RiskDecision {
   if (config.stake <= 0) {
     return { allowed: false, reason: "Stake must be greater than zero" };
   }
 
-  if (session.totalTrades >= config.maxTradesPerSession) {
+  const reservedTrades = session.totalTrades + Math.max(0, openPositions);
+  if (reservedTrades >= config.maxTradesPerSession) {
     return { allowed: false, reason: "Maximum session trades reached" };
   }
 

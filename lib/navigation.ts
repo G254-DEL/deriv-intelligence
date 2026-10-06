@@ -13,6 +13,7 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/bot-builder", label: "Bot Builder", ready: true },
   { href: "/bulk-trader", label: "Bulk Trader", ready: true },
   { href: "/bot-monitor", label: "Free Bots", ready: true },
+  { href: "/strategy-lab", label: "Strategy Lab", ready: true },
   { href: "/backtesting", label: "Backtesting", ready: false },
   { href: "/paper-trading", label: "Paper Trading", ready: false },
   { href: "/trading", label: "Trading", ready: false },

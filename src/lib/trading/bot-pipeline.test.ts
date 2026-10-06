@@ -11,6 +11,7 @@ import {
 import { openArmedPaperTrade } from "./armed-paper-trade";
 import { decideEntry } from "./entry-signal";
 import { routeMarkets } from "./market-router";
+import { knownDigitContracts } from "./market-universe";
 import {
   emptyPerformanceBook,
   performanceAdjustment,
@@ -30,6 +31,10 @@ import { closeControlledPaperTrade, openControlledPaperTrade } from "./controlle
 
 function digitsFrom(pattern: number[]): number[] {
   return pattern;
+}
+
+function market(symbol: string, marketName: string, digits: number[]) {
+  return { symbol, marketName, digits, contracts: knownDigitContracts() };
 }
 
 const underSample = digitsFrom([
@@ -151,14 +156,19 @@ test("router ranks a qualified specialist and skips a cooled-down pair", () => {
 
   const routed = routeMarkets({
     markets: [
-      { symbol: "R_10", marketName: "Volatility 10", digits: underSample },
-      { symbol: "R_25", marketName: "Volatility 25", digits: underSample },
+      market("R_10", "Volatility 10", underSample),
+      market("R_25", "Volatility 25", underSample),
     ],
     performance: book,
   });
-  assert.equal(routed.assigned.UNDER_7?.symbol, "R_25");
-  assert.equal(routed.assigned.UNDER_8?.symbol, "R_10");
-  assert.ok((routed.assigned.UNDER_7?.rankScore ?? 0) <= (routed.assigned.UNDER_7?.confidence ?? 0) + 0.0001);
+  assert.equal(
+    routed.ranked.some((item) => item.symbol === "R_10" && item.strategy === "UNDER_7"),
+    false,
+  );
+  assert.notEqual(routed.assignments.R_10?.strategy, "UNDER_7");
+  assert.ok(routed.assignments.R_25);
+  assert.equal(routed.assignments.R_10?.symbol, "R_10");
+  assert.equal(routed.assignments.R_25?.symbol, "R_25");
 });
 
 test("historical performance cannot arm a weak live sample", () => {
@@ -176,11 +186,15 @@ test("historical performance cannot arm a weak live sample", () => {
   }
   assert.equal(performanceAdjustment(book, "R_50", "OVER_3"), 0.1);
   const routed = routeMarkets({
-    markets: [{ symbol: "R_50", marketName: "Volatility 50", digits: flatSample }],
+    markets: [market("R_50", "Volatility 50", flatSample)],
     performance: book,
   });
-  const over3 = routed.ranked.find((item) => item.strategy === "OVER_3");
+  const over3 = routed.evaluated.find((item) => item.strategy === "OVER_3");
   assert.equal(over3?.ready, false);
+  assert.equal(
+    routed.ranked.some((item) => item.symbol === "R_50" && item.strategy === "OVER_3"),
+    false,
+  );
   assert.equal(
     decideEntry({
       enabled: true,
@@ -291,11 +305,12 @@ test("Market Router ranks and assigns without arming an entry", async () => {
   const router = presetById("autoswitcher");
   assert.equal(resolveActiveMasterRole(router), "router");
   const routed = routeMarkets({
-    markets: [{ symbol: "R_75", marketName: "Volatility 75", digits: underSample }],
+    markets: [market("R_75", "Volatility 75", underSample)],
     performance: emptyPerformanceBook(),
   });
-  assert.equal(routed.assigned.UNDER_8?.symbol, "R_75");
-  assert.equal(routed.assigned.UNDER_8?.strategy, "UNDER_8");
+  assert.equal(routed.assignments.R_75?.symbol, "R_75");
+  assert.ok(routed.assignments.R_75?.ready);
+  assert.equal(routed.assignments.R_75?.strategy, routed.ranked[0]?.strategy);
   const fit = fitForStrategy(underSample, "UNDER_8");
   const armed = decideEntry({
     enabled: true,
@@ -335,10 +350,10 @@ test("Entry Signal Hunter waits, then arms, and only then permits specialist exe
   const hunter = presetById("entrypoint-hunter");
   assert.equal(resolveActiveMasterRole(hunter), "entry");
   const routed = routeMarkets({
-    markets: [{ symbol: "R_75", marketName: "Volatility 75", digits: underSample }],
+    markets: [market("R_75", "Volatility 75", underSample)],
     performance: emptyPerformanceBook(),
   });
-  assert.equal(routed.assigned.UNDER_8?.symbol, "R_75");
+  assert.equal(routed.assignments.R_75?.symbol, "R_75");
 
   const short = decideEntry({
     enabled: true,

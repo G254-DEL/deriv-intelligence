@@ -1,8 +1,14 @@
+import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { DERIV_OAUTH2_TOKEN_URL } from "@/src/lib/deriv/auth/config";
+import {
+  DERIV_OAUTH2_TOKEN_URL,
+  OAUTH_ACCESS_COOKIE,
+} from "@/src/lib/deriv/auth/config";
+import { releasePrivateSession } from "@/src/lib/deriv/auth/private-session";
 import { fetchDerivRestAccounts } from "@/src/lib/deriv/auth/rest-accounts";
+import { clearAuthCookies } from "@/src/lib/deriv/auth/session-cookies";
 
-const COOKIE = "deriv_oauth_at";
+const COOKIE = OAUTH_ACCESS_COOKIE;
 
 export async function POST(request: Request) {
   const clientId = process.env.NEXT_PUBLIC_DERIV_OAUTH_CLIENT_ID?.trim();
@@ -92,15 +98,12 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE() {
+  const token = (await cookies()).get(COOKIE)?.value;
+  if (token) {
+    releasePrivateSession(token);
+  }
   const response = NextResponse.json({ authenticated: false });
-  response.cookies.set({
-    name: COOKIE,
-    value: "",
-    httpOnly: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: 0,
-  });
+  clearAuthCookies(response);
   return response;
 }
 

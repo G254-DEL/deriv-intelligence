@@ -1,6 +1,7 @@
 export type AuthConnectionStatus =
   | "signed_out"
   | "unconfigured"
+  | "select_account"
   | "connecting"
   | "authenticating"
   | "authenticated"

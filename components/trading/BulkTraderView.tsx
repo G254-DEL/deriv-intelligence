@@ -14,8 +14,8 @@ import { createTradingSession, type TradingSession } from "@/src/lib/trading/ses
 import type { PaperTrade } from "@/src/lib/trading/types";
 import { paperProposalRequest, parseProposalQuote } from "@/src/lib/trading/proposal";
 import type { PaperProposalClient } from "@/src/lib/trading/open-quoted-paper-trade";
+import { LIVE_ORDERS_ENABLED } from "@/src/lib/trading/live-orders";
 
-const LIVE_ORDERS_ENABLED = false;
 const MAX_BULK = 10;
 
 type Phase = "idle" | "armed" | "open";

@@ -7,7 +7,10 @@ import {
   type DerivConnectionState,
   type MarketTickSnapshot,
 } from "@/src/lib/deriv";
-import { extractLastDisplayedDigit } from "@/src/lib/digits/extract-last-digit";
+import {
+  decimalPlacesFromPipSize,
+  extractLastDisplayedDigit,
+} from "@/src/lib/digits/extract-last-digit";
 import type { Tick } from "@/src/lib/deriv/types";
 
 export type SampleTick = {
@@ -31,6 +34,7 @@ export function useMarketDigitSample(count: number) {
   const [ticks, setTicks] = useState<SampleTick[]>([]);
   const [latest, setLatest] = useState<MarketTickSnapshot | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const symbolsRef = useRef<DerivActiveSymbol[]>([]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -83,6 +87,20 @@ export function useMarketDigitSample(count: number) {
 
   symbolRef.current = symbol;
   countRef.current = count;
+  symbolsRef.current = symbols;
+
+  const decimalPlaces = useMemo(() => {
+    return decimalPlacesFromPipSize(pipSizeFor(symbols, symbol));
+  }, [symbol, symbols]);
+
+  const digits = useMemo(
+    () =>
+      ticks.flatMap((tick) => {
+        const digit = displayedDigit(tick, decimalPlaces);
+        return digit === null ? [] : [digit];
+      }),
+    [decimalPlaces, ticks],
+  );
 
   useEffect(() => {
     const client = clientRef.current;
@@ -105,7 +123,13 @@ export function useMarketDigitSample(count: number) {
         if (!mountedRef.current || symbolRef.current !== symbol) {
           return;
         }
-        setTicks(historyToSample(history, count));
+        setTicks(
+          historyToSample(
+            history,
+            count,
+            decimalPlacesFromPipSize(pipSizeFor(symbolsRef.current, symbol)),
+          ),
+        );
       })
       .catch(() => {
         if (mountedRef.current) {
@@ -116,8 +140,6 @@ export function useMarketDigitSample(count: number) {
       client.releaseTickSubscriptions("digit-sample");
     };
   }, [connectionState, symbol, count]);
-
-  const digits = useMemo(() => ticks.map((tick) => tick.digit), [ticks]);
 
   return {
     connectionState,
@@ -132,15 +154,39 @@ export function useMarketDigitSample(count: number) {
   };
 }
 
-function historyToSample(history: Tick[], count: number): SampleTick[] {
+function historyToSample(
+  history: Tick[],
+  count: number,
+  decimalPlaces: number | undefined,
+): SampleTick[] {
   const samples: SampleTick[] = [];
   for (const tick of history) {
-    const extracted = extractLastDisplayedDigit(tick.quote);
+    const extracted = extractLastDisplayedDigit(tick.quote, decimalPlaces);
     const digit = extracted ? Number(extracted.digit) : Number.NaN;
-    if (!Number.isInteger(digit)) {
+    if (!Number.isInteger(digit) || digit < 0 || digit > 9) {
       continue;
     }
     samples.push({ quote: tick.quote, epoch: tick.epoch, digit });
   }
   return samples.slice(-count);
+}
+
+function pipSizeFor(symbols: DerivActiveSymbol[], symbol: string): number {
+  return symbols.find((item) => item.underlying_symbol === symbol)?.pip_size ?? Number.NaN;
+}
+
+function displayedDigit(
+  tick: SampleTick,
+  decimalPlaces: number | undefined,
+): number | null {
+  if (typeof decimalPlaces === "number") {
+    const extracted = extractLastDisplayedDigit(tick.quote, decimalPlaces);
+    const digit = extracted ? Number(extracted.digit) : Number.NaN;
+    if (Number.isInteger(digit) && digit >= 0 && digit <= 9) {
+      return digit;
+    }
+  }
+  return Number.isInteger(tick.digit) && tick.digit >= 0 && tick.digit <= 9
+    ? tick.digit
+    : null;
 }

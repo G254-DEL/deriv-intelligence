@@ -1,4 +1,7 @@
-import { AuthenticatedDerivClient } from "./authenticated-client";
+import {
+  type BrowserAccountPayload,
+  type PrivateConnectionState,
+} from "./account-selection";
 import {
   getDerivAppId,
   getDerivOAuthClientId,
@@ -11,19 +14,8 @@ import {
   readPkceSession,
   stripOAuthParamsFromUrl,
 } from "./oauth";
-import { accountKindFromLoginid } from "./parse-account";
-import type { RestAccount } from "./rest-accounts";
-import {
-  clearPersistedSession,
-  loadPersistedSession,
-  savePersistedSession,
-} from "./session-store";
-import type {
-  AccountSnapshot,
-  AuthConnectionStatus,
-  LinkedAccount,
-  OAuthAccountToken,
-} from "./types";
+import { clearPersistedSession } from "./session-store";
+import type { AccountSnapshot, AuthConnectionStatus } from "./types";
 
 const listeners = new Set<() => void>();
 
@@ -39,53 +31,8 @@ const signedOut: AccountSnapshot = {
 };
 
 let snapshot: AccountSnapshot = { ...signedOut };
-const client = new AuthenticatedDerivClient();
 let started = false;
-
-client.setHandlers({
-  onStatusChange: (status, detail) => {
-    if (status === "disconnected" && snapshot.status === "signed_out") {
-      return;
-    }
-    if (status === "disconnected") {
-      return;
-    }
-    const mapped: AuthConnectionStatus =
-      status === "authenticated"
-        ? "authenticated"
-        : status === "error"
-          ? "error"
-          : status === "authenticating"
-            ? "authenticating"
-            : "connecting";
-    updateSnapshot({
-      status: mapped,
-      detail: detail ?? snapshot.detail,
-    });
-  },
-  onAccount: (account) => {
-    updateSnapshot({
-      status: "authenticated",
-      detail: null,
-      loginid: account.loginid,
-      currency: account.currency || snapshot.currency,
-      balance: account.balance,
-      kind: account.kind,
-      accounts: account.accounts,
-    });
-  },
-  onBalance: (balance, currency, loginid) => {
-    updateSnapshot({
-      balance,
-      currency: currency ?? snapshot.currency,
-      loginid: loginid ?? snapshot.loginid,
-      kind: accountKindFromLoginid(
-        loginid ?? snapshot.loginid,
-        snapshot.kind === "demo" ? 1 : snapshot.kind === "real" ? 0 : null,
-      ),
-    });
-  },
-});
+let pollTimer: number | null = null;
 
 export function getAccountSnapshot(): AccountSnapshot {
   return snapshot;
@@ -103,6 +50,7 @@ export function startAccountSession(): void {
     return;
   }
   started = true;
+  clearPersistedSession();
   snapshot = {
     ...snapshot,
     configured: Boolean(getDerivAppId() || getDerivOAuthClientId()),
@@ -116,6 +64,7 @@ export function startAccountSession(): void {
         : "Set NEXT_PUBLIC_DERIV_APP_ID to enable Deriv account login.",
   };
   emit();
+  startPolling();
   void consumeRedirectAndRestore();
 }
 
@@ -132,10 +81,33 @@ export async function signInToDerivAccount(): Promise<void> {
   window.location.assign(url);
 }
 
+export async function selectDerivAccount(loginid: string): Promise<void> {
+  updateSnapshot({
+    status: "connecting",
+    detail: "Connecting to the selected Deriv account…",
+    loginid,
+    balance: null,
+  });
+  try {
+    const response = await fetch("/api/deriv/account", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({ loginid }),
+    });
+    applyServerPayload((await response.json()) as BrowserAccountPayload);
+  } catch {
+    updateSnapshot({
+      status: "error",
+      detail: "Could not select that Deriv account.",
+      balance: null,
+    });
+  }
+}
+
 export async function signOutDerivAccount(): Promise<void> {
   clearPersistedSession();
   clearPkceSession();
-  await client.logout();
   try {
     await fetch("/api/deriv/oauth/token", { method: "DELETE" });
   } catch {
@@ -163,7 +135,12 @@ async function consumeRedirectAndRestore(): Promise<void> {
   }
 
   if (parsed.type === "legacy_tokens") {
-    await authorizeLegacyAccounts(parsed.accounts);
+    clearPersistedSession();
+    clearPkceSession();
+    updateSnapshot({
+      status: "error",
+      detail: "Legacy token login is disabled. Sign in with Deriv OAuth.",
+    });
     return;
   }
 
@@ -172,64 +149,7 @@ async function consumeRedirectAndRestore(): Promise<void> {
     return;
   }
 
-  const persisted = loadPersistedSession();
-  if (persisted) {
-    await authorizeLegacyAccounts(persisted.accounts, persisted.selectedLoginid);
-    return;
-  }
-
-  await restoreOAuth2CookieSession();
-}
-
-async function authorizeLegacyAccounts(
-  accounts: OAuthAccountToken[],
-  selectedLoginid?: string,
-): Promise<void> {
-  const appId = getDerivAppId();
-  if (!appId) {
-    updateSnapshot({
-      status: "error",
-      detail:
-        "NEXT_PUBLIC_DERIV_APP_ID is required to open an authenticated Deriv session.",
-    });
-    return;
-  }
-
-  const selected =
-    accounts.find((item) => item.loginid === selectedLoginid) ?? accounts[0];
-  if (!selected) {
-    updateSnapshot({
-      status: "error",
-      detail: "No Deriv account token was returned.",
-    });
-    return;
-  }
-
-  savePersistedSession({
-    accounts,
-    selectedLoginid: selected.loginid,
-  });
-
-  updateSnapshot({
-    status: "connecting",
-    detail: "Connecting to Deriv account…",
-    loginid: selected.loginid,
-    currency: selected.currency || null,
-    kind: accountKindFromLoginid(selected.loginid),
-    accounts: toLinked(accounts),
-  });
-
-  try {
-    await client.connectAndAuthorize({ appId, token: selected.token });
-  } catch (error) {
-    updateSnapshot({
-      status: "error",
-      detail:
-        error instanceof Error
-          ? error.message
-          : "Could not authorize the Deriv account.",
-    });
-  }
+  await refreshFromServer();
 }
 
 async function exchangeOAuth2Code(code: string, state: string): Promise<void> {
@@ -267,10 +187,7 @@ async function exchangeOAuth2Code(code: string, state: string): Promise<void> {
         redirect_uri: redirectUri,
       }),
     });
-    const body = (await response.json()) as {
-      error?: string;
-      accounts?: RestAccount[];
-    };
+    const body = (await response.json()) as { error?: string };
     if (!response.ok) {
       updateSnapshot({
         status: "error",
@@ -278,7 +195,7 @@ async function exchangeOAuth2Code(code: string, state: string): Promise<void> {
       });
       return;
     }
-    applyRestAccounts(body.accounts ?? []);
+    await refreshFromServer();
   } catch {
     updateSnapshot({
       status: "error",
@@ -287,49 +204,85 @@ async function exchangeOAuth2Code(code: string, state: string): Promise<void> {
   }
 }
 
-async function restoreOAuth2CookieSession(): Promise<void> {
+async function refreshFromServer(): Promise<void> {
   try {
-    const response = await fetch("/api/deriv/account");
-    if (!response.ok) {
+    const response = await fetch("/api/deriv/account", { cache: "no-store" });
+    applyServerPayload((await response.json()) as BrowserAccountPayload);
+  } catch {
+    if (snapshot.status === "signed_out" || snapshot.status === "unconfigured") {
       return;
     }
-    const body = (await response.json()) as {
-      authenticated?: boolean;
-      accounts?: RestAccount[];
-    };
-    if (body.authenticated) {
-      applyRestAccounts(body.accounts ?? []);
-    }
-  } catch {
-    // Stay signed out if cookie restore fails.
+    updateSnapshot({
+      status: "error",
+      detail: "Could not restore the Deriv account session.",
+    });
   }
 }
 
-function applyRestAccounts(accounts: RestAccount[]): void {
-  const first = accounts[0];
+function applyServerPayload(body: BrowserAccountPayload): void {
+  const configured = Boolean(getDerivAppId() || getDerivOAuthClientId());
+  if (!body.authenticated) {
+    snapshot = {
+      ...signedOut,
+      configured,
+      status: configured ? "signed_out" : "unconfigured",
+      detail: body.detail,
+    };
+    emit();
+    return;
+  }
+
+  if (body.selectionRequired || !body.connection) {
+    updateSnapshot({
+      status: "select_account",
+      detail: body.detail ?? "Choose a Deriv account.",
+      loginid: null,
+      currency: null,
+      balance: null,
+      kind: null,
+      accounts: body.accounts,
+    });
+    return;
+  }
+
   updateSnapshot({
-    status: "authenticated",
-    detail: first
-      ? null
-      : "Signed in with OAuth 2.0. Account details were not returned.",
-    loginid: first?.loginid ?? "signed-in",
-    currency: first?.currency ?? null,
-    balance: first?.balance ?? null,
-    kind: first?.kind ?? "unknown",
-    accounts: accounts.map(({ loginid, currency, kind }) => ({
-      loginid,
-      currency,
-      kind,
-    })),
+    status: mapConnectionStatus(body.connection),
+    detail: body.connection.detail ?? body.detail,
+    loginid: body.connection.loginid,
+    currency: body.connection.currency,
+    balance: body.connection.balance,
+    kind: body.connection.kind,
+    accounts: body.accounts,
   });
 }
 
-function toLinked(accounts: OAuthAccountToken[]): LinkedAccount[] {
-  return accounts.map((account) => ({
-    loginid: account.loginid,
-    currency: account.currency,
-    kind: accountKindFromLoginid(account.loginid),
-  }));
+function mapConnectionStatus(connection: PrivateConnectionState): AuthConnectionStatus {
+  if (connection.status === "authenticated") {
+    return "authenticated";
+  }
+  if (connection.status === "authenticating") {
+    return "authenticating";
+  }
+  if (connection.status === "connecting") {
+    return "connecting";
+  }
+  return "error";
+}
+
+function startPolling(): void {
+  if (pollTimer !== null) {
+    return;
+  }
+  pollTimer = window.setInterval(() => {
+    if (
+      snapshot.status === "signed_out" ||
+      snapshot.status === "unconfigured" ||
+      snapshot.status === "select_account"
+    ) {
+      return;
+    }
+    void refreshFromServer();
+  }, 4_000);
 }
 
 function updateSnapshot(partial: Partial<AccountSnapshot>): void {

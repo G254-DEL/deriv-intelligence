@@ -254,24 +254,27 @@ export function MarketScannerView() {
     });
   }, [category, entryStateFilter, query, symbols, digitHistory]);
 
+  const liveSymbolKey = useMemo(
+    () => pickLiveSymbols(rows, selectedSymbol, MAX_LIVE_TICK_STREAMS).join(","),
+    [rows, selectedSymbol],
+  );
+
   useEffect(() => {
     const client = clientRef.current;
     if (!client || connectionState !== "connected") {
       return;
     }
 
+    const symbols = liveSymbolKey ? liveSymbolKey.split(",") : [];
     const handle = window.setTimeout(() => {
-      client.setTickSubscriptions(
-        pickLiveSymbols(rows, selectedSymbol, MAX_LIVE_TICK_STREAMS),
-        "scanner",
-      );
+      client.setTickSubscriptions(symbols, "scanner");
     }, 200);
 
     return () => {
       window.clearTimeout(handle);
       client.releaseTickSubscriptions("scanner");
     };
-  }, [connectionState, rows, selectedSymbol]);
+  }, [connectionState, liveSymbolKey]);
 
   function handleWatch(symbol: string) {
     setSelectedSymbol(symbol);

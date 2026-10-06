@@ -9,19 +9,30 @@ export type RestAccount = {
   balance: number | null;
 };
 
-export async function fetchDerivRestAccounts(
+export async function fetchDerivRestAccountsResult(
   accessToken: string,
-): Promise<RestAccount[]> {
+): Promise<{ ok: boolean; accounts: RestAccount[] }> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
     "Content-Type": "application/json",
   };
 
-  const response = await fetch(DERIV_REST_ACCOUNTS_URL, { headers });
-  if (!response.ok) {
-    return [];
+  try {
+    const response = await fetch(DERIV_REST_ACCOUNTS_URL, { headers });
+    if (!response.ok) {
+      return { ok: false, accounts: [] };
+    }
+    return { ok: true, accounts: parseRestAccounts(await response.json()) };
+  } catch {
+    return { ok: false, accounts: [] };
   }
-  return parseRestAccounts(await response.json());
+}
+
+export async function fetchDerivRestAccounts(
+  accessToken: string,
+): Promise<RestAccount[]> {
+  const result = await fetchDerivRestAccountsResult(accessToken);
+  return result.accounts;
 }
 
 export function parseRestAccounts(payload: unknown): RestAccount[] {

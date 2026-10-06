@@ -3,6 +3,7 @@
 import { useSyncExternalStore } from "react";
 import {
   getAccountSnapshot,
+  selectDerivAccount,
   signInToDerivAccount,
   signOutDerivAccount,
   subscribeAccountSnapshot,
@@ -29,6 +30,35 @@ export function AccountStatus() {
         <p className="text-xs font-medium text-foreground">Account</p>
         <p className="truncate text-[11px] text-muted">{statusLine(account)}</p>
       </div>
+      {account.accounts.length > 1 ? (
+        <label className="sr-only" htmlFor="deriv-account-select">
+          Deriv account
+        </label>
+      ) : null}
+      {account.accounts.length > 1 ? (
+        <select
+          id="deriv-account-select"
+          value={account.loginid ?? ""}
+          onChange={(event) => {
+            const loginid = event.target.value;
+            if (!loginid || loginid === account.loginid) {
+              return;
+            }
+            void selectDerivAccount(loginid);
+          }}
+          className="max-w-[9.5rem] rounded-md border border-border bg-background px-2 py-1 text-[11px] text-foreground"
+        >
+          {account.status === "select_account" ? (
+            <option value="">Select account</option>
+          ) : null}
+          {account.accounts.map((item) => (
+            <option key={item.loginid} value={item.loginid}>
+              {item.kind === "demo" ? "Demo" : item.kind === "real" ? "Real" : "Account"}{" "}
+              {item.loginid}
+            </option>
+          ))}
+        </select>
+      ) : null}
       <AccountAction account={account} />
     </div>
   );
@@ -36,6 +66,45 @@ export function AccountStatus() {
 
 function AccountAction({ account }: { account: AccountSnapshot }) {
   if (account.status === "authenticated") {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          void signOutDerivAccount();
+        }}
+        className="rounded-md border border-border px-2 py-1 text-[11px] text-foreground"
+      >
+        Log out
+      </button>
+    );
+  }
+
+  if (account.status === "error" && account.loginid) {
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => {
+            void selectDerivAccount(account.loginid ?? "");
+          }}
+          className="rounded-md border border-border px-2 py-1 text-[11px] text-foreground"
+        >
+          Retry
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            void signOutDerivAccount();
+          }}
+          className="rounded-md border border-border px-2 py-1 text-[11px] text-foreground"
+        >
+          Log out
+        </button>
+      </>
+    );
+  }
+
+  if (account.status === "select_account") {
     return (
       <button
         type="button"
@@ -82,6 +151,9 @@ function initials(account: AccountSnapshot): string {
 function statusLine(account: AccountSnapshot): string {
   if (account.status === "unconfigured") {
     return "Login not configured";
+  }
+  if (account.status === "select_account") {
+    return "Choose demo or real account";
   }
   if (account.status === "connecting" || account.status === "authenticating") {
     return account.detail ?? "Connecting…";

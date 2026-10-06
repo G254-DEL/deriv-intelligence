@@ -5,6 +5,13 @@ import type { AccountKind, LinkedAccount } from "./types";
 
 type JsonRecord = Record<string, unknown>;
 
+const SOCKET_CONNECTING = 0;
+const SOCKET_OPEN = 1;
+const RECONNECT_BASE_MS = 2_000;
+const RECONNECT_MAX_MS = 30_000;
+const PING_MS = 30_000;
+const REQUEST_TIMEOUT_MS = 12_000;
+
 export type AuthenticatedAccountHandlers = {
   onStatusChange?: (
     status: "connecting" | "authenticating" | "authenticated" | "disconnected" | "error",
@@ -20,15 +27,38 @@ export type AuthenticatedAccountHandlers = {
   onBalance?: (balance: number, currency?: string, loginid?: string) => void;
 };
 
-const PING_MS = 30_000;
-const REQUEST_TIMEOUT_MS = 12_000;
+export type AccountSocket = {
+  readyState: number;
+  send(data: string): void;
+  close(): void;
+  onopen: (() => void) | null;
+  onmessage: ((event: { data: unknown }) => void) | null;
+  onerror: ((event?: unknown) => void) | null;
+  onclose: (() => void) | null;
+};
+
+export type AccountSocketFactory = (url: string) => AccountSocket;
+
+export type AuthenticatedClientOptions = {
+  createSocket?: AccountSocketFactory;
+  reconnectDelayMs?: (attempt: number) => number;
+};
+
+type PrivateSession = {
+  appId: string;
+  token: string;
+  expectedLoginid: string;
+};
 
 export class AuthenticatedDerivClient {
-  private socket: WebSocket | null = null;
+  private socket: AccountSocket | null = null;
   private reqId = 1;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private closedIntentionally = false;
   private handlers: AuthenticatedAccountHandlers;
+  private readonly createSocket: AccountSocketFactory;
+  private readonly reconnectDelayMs: (attempt: number) => number;
   private pending = new Map<
     number,
     {
@@ -37,9 +67,22 @@ export class AuthenticatedDerivClient {
       timer: ReturnType<typeof setTimeout> | null;
     }
   >();
+  private generation = 0;
+  private session: PrivateSession | null = null;
+  private opening: Promise<void> | null = null;
+  private authenticatedLoginid: string | null = null;
+  private balanceSubscribed = false;
+  private reconnectAttempt = 0;
 
-  constructor(handlers: AuthenticatedAccountHandlers = {}) {
+  constructor(
+    handlers: AuthenticatedAccountHandlers = {},
+    options: AuthenticatedClientOptions = {},
+  ) {
     this.handlers = handlers;
+    this.createSocket = options.createSocket ?? defaultSocketFactory;
+    this.reconnectDelayMs =
+      options.reconnectDelayMs ??
+      ((attempt) => Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS));
   }
 
   setHandlers(handlers: AuthenticatedAccountHandlers): void {
@@ -49,72 +92,47 @@ export class AuthenticatedDerivClient {
   async connectAndAuthorize(params: {
     appId: string;
     token: string;
+    expectedLoginid: string;
   }): Promise<void> {
-    this.disconnect();
+    const sameSession =
+      this.session?.expectedLoginid === params.expectedLoginid &&
+      this.session?.appId === params.appId;
+    if (sameSession && this.opening) {
+      return this.opening;
+    }
+    if (
+      sameSession &&
+      this.authenticatedLoginid === params.expectedLoginid &&
+      this.socket?.readyState === SOCKET_OPEN
+    ) {
+      return;
+    }
+
+    this.generation += 1;
+    const generation = this.generation;
+    this.clearReconnect();
+    this.stopPing();
+    this.detachSocket();
+    this.session = {
+      appId: params.appId,
+      token: params.token,
+      expectedLoginid: params.expectedLoginid,
+    };
+    this.authenticatedLoginid = null;
+    this.balanceSubscribed = false;
+    this.reconnectAttempt = 0;
     this.closedIntentionally = false;
-    this.handlers.onStatusChange?.("connecting");
-
-    if (typeof WebSocket === "undefined") {
-      this.handlers.onStatusChange?.(
-        "error",
-        "WebSocket is not available in this environment.",
-      );
-      throw new Error("WebSocket is not available in this environment.");
-    }
-
-    const url = authenticatedWebSocketUrl(params.appId);
-
-    await new Promise<void>((resolve, reject) => {
-      const socket = new WebSocket(url);
-      this.socket = socket;
-
-      socket.onopen = () => {
-        this.handlers.onStatusChange?.("authenticating");
-        resolve();
-      };
-      socket.onerror = () => {
-        reject(new Error("Authenticated Deriv WebSocket failed to open."));
-      };
-      socket.onclose = () => {
-        this.handleClose();
-      };
-      socket.onmessage = (event: MessageEvent) => {
-        void this.handleMessage(event);
-      };
-    });
-
-    this.startPing();
-
-    const payload = await this.request({ authorize: params.token });
-    const account = parseAuthorizePayload(payload);
-    if (!account) {
-      throw new Error("Authorize response did not include an account.");
-    }
-
-    this.handlers.onAccount?.(account);
-    this.handlers.onStatusChange?.("authenticated");
-
-    try {
-      const balancePayload = await this.request({
-        balance: 1,
-        subscribe: 1,
-      });
-      const balance = parseBalancePayload(balancePayload);
-      if (balance) {
-        this.handlers.onBalance?.(
-          balance.balance,
-          balance.currency,
-          balance.loginid,
-        );
+    this.opening = this.openAndAuthorize(generation).finally(() => {
+      if (this.generation === generation) {
+        this.opening = null;
       }
-    } catch {
-      // Balance is optional after a successful authorize.
-    }
+    });
+    return this.opening;
   }
 
   async logout(): Promise<void> {
     try {
-      if (this.socket?.readyState === WebSocket.OPEN) {
+      if (this.socket?.readyState === SOCKET_OPEN) {
         await this.request({ logout: 1 });
       }
     } catch {
@@ -125,28 +143,219 @@ export class AuthenticatedDerivClient {
   }
 
   disconnect(): void {
+    this.generation += 1;
+    this.session = null;
+    this.authenticatedLoginid = null;
+    this.balanceSubscribed = false;
     this.closedIntentionally = true;
+    this.clearReconnect();
     this.stopPing();
     this.rejectPending("Authenticated session disconnected");
-    if (this.socket) {
-      this.socket.onopen = null;
-      this.socket.onmessage = null;
-      this.socket.onerror = null;
-      this.socket.onclose = null;
-      if (
-        this.socket.readyState === WebSocket.OPEN ||
-        this.socket.readyState === WebSocket.CONNECTING
-      ) {
-        this.socket.close();
+    this.detachSocket();
+    this.handlers.onStatusChange?.("disconnected");
+  }
+
+  private async openAndAuthorize(generation: number): Promise<void> {
+    const session = this.session;
+    if (!session || generation !== this.generation) {
+      return;
+    }
+
+    this.handlers.onStatusChange?.("connecting");
+    this.detachSocket();
+
+    if (typeof this.createSocket !== "function") {
+      this.failClosed(generation, "WebSocket is not available in this environment.");
+      return;
+    }
+
+    let opened: AccountSocket;
+    try {
+      opened = this.createSocket(authenticatedWebSocketUrl(session.appId));
+    } catch {
+      this.failClosed(generation, "Authenticated Deriv WebSocket failed to open.");
+      return;
+    }
+
+    if (generation !== this.generation) {
+      opened.onclose = null;
+      opened.close();
+      return;
+    }
+
+    this.socket = opened;
+    const socketGeneration = generation;
+    opened.onmessage = (event) => {
+      if (socketGeneration !== this.generation) {
+        return;
+      }
+      void this.handleMessage(event);
+    };
+    opened.onerror = () => {
+      if (socketGeneration !== this.generation || this.closedIntentionally) {
+        return;
+      }
+    };
+    opened.onclose = () => {
+      if (socketGeneration !== this.generation) {
+        return;
+      }
+      this.handleClose();
+    };
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        if (opened.readyState === SOCKET_OPEN) {
+          resolve();
+          return;
+        }
+        opened.onopen = () => resolve();
+        const previousError = opened.onerror;
+        opened.onerror = (event) => {
+          previousError?.(event);
+          reject(new Error("Authenticated Deriv WebSocket failed to open."));
+        };
+      });
+
+      if (generation !== this.generation) {
+        return;
+      }
+
+      this.startPing();
+      this.handlers.onStatusChange?.("authenticating");
+      const payload = await this.request({ authorize: session.token });
+      if (generation !== this.generation) {
+        return;
+      }
+
+      const account = parseAuthorizePayload(payload);
+      if (!account || account.loginid !== session.expectedLoginid) {
+        this.failClosed(
+          generation,
+          "Authorized account does not match the selected account.",
+        );
+        return;
+      }
+
+      this.authenticatedLoginid = account.loginid;
+      this.reconnectAttempt = 0;
+      this.handlers.onAccount?.({
+        loginid: account.loginid,
+        currency: account.currency,
+        balance: account.balance,
+        kind: account.kind,
+        accounts: account.accounts,
+      });
+      this.handlers.onStatusChange?.("authenticated");
+      await this.subscribeBalance(generation);
+    } catch (error) {
+      if (generation !== this.generation) {
+        return;
+      }
+      this.failClosed(
+        generation,
+        error instanceof Error
+          ? error.message
+          : "Could not authorize the Deriv account.",
+      );
+    }
+  }
+
+  private async subscribeBalance(generation: number): Promise<void> {
+    if (this.balanceSubscribed || generation !== this.generation) {
+      return;
+    }
+    this.balanceSubscribed = true;
+    try {
+      await this.request({
+        balance: 1,
+        subscribe: 1,
+      });
+      if (generation !== this.generation) {
+        return;
+      }
+    } catch {
+      if (generation === this.generation) {
+        this.balanceSubscribed = false;
       }
     }
+  }
+
+  private publishBalance(payload: JsonRecord): void {
+    const balance = parseBalancePayload(payload);
+    if (!balance) {
+      return;
+    }
+    const expected = this.session?.expectedLoginid;
+    if (!expected || this.authenticatedLoginid !== expected) {
+      return;
+    }
+    if (balance.loginid && balance.loginid !== expected) {
+      return;
+    }
+    this.handlers.onBalance?.(balance.balance, balance.currency, balance.loginid ?? expected);
+  }
+
+  private failClosed(generation: number, message: string): void {
+    if (generation !== this.generation) {
+      return;
+    }
+    this.session = null;
+    this.authenticatedLoginid = null;
+    this.balanceSubscribed = false;
+    this.closedIntentionally = true;
+    this.clearReconnect();
+    this.stopPing();
+    this.rejectPending(message);
+    this.detachSocket();
+    this.closedIntentionally = false;
+    this.handlers.onStatusChange?.("error", message);
+  }
+
+  private handleClose(): void {
+    this.stopPing();
+    this.balanceSubscribed = false;
     this.socket = null;
-    this.handlers.onStatusChange?.("disconnected");
+    this.rejectPending("Authenticated WebSocket closed");
+    if (this.closedIntentionally || !this.session || this.reconnectTimer) {
+      return;
+    }
+    if (!this.authenticatedLoginid) {
+      this.handlers.onStatusChange?.(
+        "error",
+        "Authenticated account connection closed.",
+      );
+      return;
+    }
+    this.scheduleReconnect();
+  }
+
+  private scheduleReconnect(): void {
+    if (!this.session || this.closedIntentionally) {
+      return;
+    }
+    this.clearReconnect();
+    const attempt = this.reconnectAttempt;
+    this.reconnectAttempt += 1;
+    const delay = this.reconnectDelayMs(attempt);
+    this.handlers.onStatusChange?.("connecting", "Reconnecting to Deriv account…");
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (!this.session || this.closedIntentionally) {
+        return;
+      }
+      const generation = this.generation;
+      this.opening = this.openAndAuthorize(generation).finally(() => {
+        if (this.generation === generation) {
+          this.opening = null;
+        }
+      });
+    }, delay);
   }
 
   private request(body: JsonRecord): Promise<JsonRecord> {
     assertAllowedAuthenticatedAccountRequest(body);
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+    if (!this.socket || this.socket.readyState !== SOCKET_OPEN) {
       return Promise.reject(new Error("Authenticated WebSocket is not connected"));
     }
 
@@ -164,7 +373,7 @@ export class AuthenticatedDerivClient {
     });
   }
 
-  private async handleMessage(event: MessageEvent): Promise<void> {
+  private async handleMessage(event: { data: unknown }): Promise<void> {
     if (typeof event.data !== "string") {
       return;
     }
@@ -199,25 +408,8 @@ export class AuthenticatedDerivClient {
       this.settle(reqId, record);
     }
 
-    const balance = parseBalancePayload(record);
-    if (balance && record.msg_type === "balance") {
-      this.handlers.onBalance?.(
-        balance.balance,
-        balance.currency,
-        balance.loginid,
-      );
-    }
-  }
-
-  private handleClose(): void {
-    this.stopPing();
-    this.rejectPending("Authenticated WebSocket closed");
-    this.socket = null;
-    if (!this.closedIntentionally) {
-      this.handlers.onStatusChange?.(
-        "error",
-        "Authenticated account connection closed.",
-      );
+    if (record.msg_type === "balance") {
+      this.publishBalance(record);
     }
   }
 
@@ -247,10 +439,32 @@ export class AuthenticatedDerivClient {
     }
   }
 
+  private detachSocket(): void {
+    const socket = this.socket;
+    this.socket = null;
+    if (!socket) {
+      return;
+    }
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onerror = null;
+    socket.onclose = null;
+    if (socket.readyState === SOCKET_OPEN || socket.readyState === SOCKET_CONNECTING) {
+      socket.close();
+    }
+  }
+
+  private clearReconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
   private startPing(): void {
     this.stopPing();
     this.pingTimer = setInterval(() => {
-      if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      if (!this.socket || this.socket.readyState !== SOCKET_OPEN) {
         return;
       }
       try {
@@ -273,6 +487,41 @@ export class AuthenticatedDerivClient {
     this.reqId += 1;
     return this.reqId;
   }
+}
+
+function defaultSocketFactory(url: string): AccountSocket {
+  if (typeof WebSocket === "undefined") {
+    throw new Error("WebSocket is not available in this environment.");
+  }
+  const socket = new WebSocket(url);
+  const wrapped: AccountSocket = {
+    get readyState() {
+      return socket.readyState;
+    },
+    send(data: string) {
+      socket.send(data);
+    },
+    close() {
+      socket.close();
+    },
+    onopen: null,
+    onmessage: null,
+    onerror: null,
+    onclose: null,
+  };
+  socket.onopen = () => {
+    wrapped.onopen?.();
+  };
+  socket.onmessage = (event) => {
+    wrapped.onmessage?.({ data: event.data });
+  };
+  socket.onerror = () => {
+    wrapped.onerror?.();
+  };
+  socket.onclose = () => {
+    wrapped.onclose?.();
+  };
+  return wrapped;
 }
 
 function isRecord(value: unknown): value is JsonRecord {

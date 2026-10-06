@@ -16,6 +16,9 @@ export type PaperTrade = {
   stake: number;
   quotedPayout: number;
   entryDigit: number;
+  proposalId?: string;
+  entryEpoch?: number;
+  runtimeSessionId?: string;
   exitDigit?: number;
   status: PaperTradeStatus;
   payout: number;

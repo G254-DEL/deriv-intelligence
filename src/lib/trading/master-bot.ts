@@ -28,6 +28,12 @@ export type RankedOpportunity = {
   contractType?: string;
   barrier?: number;
   evenOddSide?: "EVEN" | "ODD";
+  fairProbability?: number;
+  performanceAdjustment?: number;
+  eligible?: boolean;
+  rank?: number | null;
+  persistence?: number;
+  contractAvailable?: boolean;
 };
 
 export function opportunityFromAnalysis(
@@ -75,17 +81,45 @@ export function opportunityFromAnalysis(
   };
 }
 
-export function rankOpportunities(
-  items: RankedOpportunity[],
-): RankedOpportunity[] {
-  return [...items].sort((left, right) => {
-    if (left.ready !== right.ready) {
-      return left.ready ? -1 : 1;
-    }
-    const rightScore = right.rankScore ?? right.confidence;
-    const leftScore = left.rankScore ?? left.confidence;
+const STRATEGY_SORT: Record<BotStrategy, number> = {
+  UNDER_7: 0,
+  UNDER_8: 1,
+  OVER_2: 2,
+  OVER_3: 3,
+  EVEN_ODD: 4,
+};
+
+export function compareOpportunities(
+  left: RankedOpportunity,
+  right: RankedOpportunity,
+): number {
+  if (left.ready !== right.ready) {
+    return left.ready ? -1 : 1;
+  }
+  const rightScore = right.rankScore ?? right.confidence;
+  const leftScore = left.rankScore ?? left.confidence;
+  if (leftScore !== rightScore) {
     return rightScore - leftScore;
-  });
+  }
+  const rightEdge = right.edge ?? 0;
+  const leftEdge = left.edge ?? 0;
+  if (leftEdge !== rightEdge) {
+    return rightEdge - leftEdge;
+  }
+  if (left.sampleSize !== right.sampleSize) {
+    return right.sampleSize - left.sampleSize;
+  }
+  if (left.confidence !== right.confidence) {
+    return right.confidence - left.confidence;
+  }
+  if (left.symbol !== right.symbol) {
+    return left.symbol < right.symbol ? -1 : 1;
+  }
+  return STRATEGY_SORT[left.strategy] - STRATEGY_SORT[right.strategy];
+}
+
+export function rankOpportunities<T extends RankedOpportunity>(items: T[]): T[] {
+  return [...items].sort(compareOpportunities);
 }
 
 export function assignSpecialistMarkets(

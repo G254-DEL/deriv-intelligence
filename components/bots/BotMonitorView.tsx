@@ -1,41 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { DEFAULT_RISK_CONFIG, canPlaceTrade } from "@/src/lib/trading/risk";
-import { closeControlledPaperTrade } from "@/src/lib/trading/controller";
-import { openArmedPaperTrade } from "@/src/lib/trading/armed-paper-trade";
-import { getRecoveryDecision } from "@/src/lib/trading/recovery";
-import {
-  presetById,
-  readLoadedBotId,
-  writeLoadedBotId,
-} from "@/src/lib/trading/bot-presets";
 import { BotGallery } from "@/components/bots/BotGallery";
 import { FREE_BOT_GALLERY } from "@/components/bots/free-bots-catalog";
 import { ActiveBotPanel } from "@/components/bots/ActiveBotPanel";
 import { MasterControlPanel } from "@/components/bots/MasterControlPanel";
+import { MarketRouterPanel } from "@/components/bots/MarketRouterPanel";
+import { RuntimeControlBar } from "@/components/bots/RuntimeControlBar";
 import {
-  SPECIALIST_BOTS,
-  type RankedOpportunity,
-} from "@/src/lib/trading/master-bot";
-import { decideEntry, type EntryDecision } from "@/src/lib/trading/entry-signal";
-import { routeMarkets } from "@/src/lib/trading/market-router";
-import {
-  emptyPerformanceBook,
-  recordPaperOutcome,
-  type PaperPerformanceBook,
-} from "@/src/lib/trading/performance-memory";
-import { fitForStrategy } from "@/src/lib/trading/specialist-edge";
-import {
-  gateForMasterRole,
-  paperExecutionPermitted,
-  resolveActiveMasterRole,
-  type ActiveMasterRole,
-} from "@/src/lib/trading/master-role";
-import type { BotStrategy, PaperTrade } from "@/src/lib/trading/types";
-import { createTradingSession, type TradingSession } from "@/src/lib/trading/session";
-import {
-  MAX_LIVE_TICK_STREAMS,
   connectionLabel,
   retainPublicMarketData,
   type DerivActiveSymbol,
@@ -43,77 +15,671 @@ import {
   type MarketTickSnapshot,
   type PublicMarketDataClient,
 } from "@/src/lib/deriv";
+import { openArmedPaperTrade } from "@/src/lib/trading/armed-paper-trade";
+import {
+  presetById,
+  readLoadedBotId,
+  writeLoadedBotId,
+} from "@/src/lib/trading/bot-presets";
+import { emptyDigitSamples, recordDigitSample, type DigitSampleBook } from "@/src/lib/trading/digit-samples";
+import { decideEntry, type EntryDecision } from "@/src/lib/trading/entry-signal";
+import { LIVE_ORDERS_ENABLED } from "@/src/lib/trading/live-orders";
+import {
+  discoverEligibleMarkets,
+  parseDigitContracts,
+  unknownDigitContracts,
+  type EligibleMarket,
+  type ParsedDigitContracts,
+} from "@/src/lib/trading/market-universe";
+import { routeMarkets, type RouterOpportunity } from "@/src/lib/trading/market-router";
+import { SPECIALIST_BOTS } from "@/src/lib/trading/master-bot";
+import {
+  commitOpenPosition,
+  emptyPaperBook,
+  settleSymbolPosition,
+  type PaperPositionBook,
+  type TrackedPaperPosition,
+} from "@/src/lib/trading/paper-book";
+import {
+  emptyPerformanceBook,
+  recordPaperOutcome,
+  type PaperPerformanceBook,
+} from "@/src/lib/trading/performance-memory";
+import { canPlaceTrade, DEFAULT_RISK_CONFIG } from "@/src/lib/trading/risk";
+import { getRecoveryDecision } from "@/src/lib/trading/recovery";
+import {
+  evaluateAssignmentEntries,
+  mayOpenPaperTrade,
+  routerTableRows,
+  type RouterTableRow,
+} from "@/src/lib/trading/run-cycle";
+import {
+  blockArmedEntries,
+  createRuntimeState,
+  dispatchRuntime,
+  entriesAllowed,
+  MIN_COOLDOWN_SECONDS,
+  noteRuntime,
+  parseCooldownSeconds,
+  recordSessionTrade,
+  selectCooldownDuration,
+  type RuntimeCommand,
+  type RuntimeState,
+} from "@/src/lib/trading/runtime-session";
+import { createTradingSession, type TradingSession } from "@/src/lib/trading/session";
+import { fitForStrategy, MIN_DIGIT_SAMPLE } from "@/src/lib/trading/specialist-edge";
+import {
+  openLivePaperRecord,
+  readLivePaperBook,
+  settleLivePaperRecord,
+  writeLivePaperBook,
+  type LivePaperBook,
+} from "@/src/lib/research/forward";
+import { definitionForBotStrategy } from "@/src/lib/research/registry";
+import { resolveActiveMasterRole } from "@/src/lib/trading/master-role";
+import type { BotStrategy, PaperTrade } from "@/src/lib/trading/types";
 
 const PAPER_PROPOSAL_CURRENCY = "USD";
 const PAPER_TARGET_PROFIT = 0.1;
-const LIVE_ORDERS_ENABLED = false;
-const MASTER_STREAM_LIMIT = 16;
 const PERFORMANCE_STORAGE_KEY = "deriv.intelligence.paper-performance";
+const DISPLAY_FLUSH_MS = 400;
+const PROPOSAL_BACKOFF_MS = 5_000;
+const CONTRACT_RETRY_MS = 30_000;
+const CONTRACT_PROBE_CONCURRENCY = 4;
+
+type RouterModel = {
+  discovered: number;
+  subscribed: number;
+  sufficient: number;
+  qualified: number;
+  assignmentCount: number;
+  rows: RouterTableRow[];
+  ranked: RouterOpportunity[];
+  assignments: Record<string, RouterOpportunity>;
+  assigned: Record<BotStrategy, RouterOpportunity | null>;
+  entries: Record<string, EntryDecision>;
+};
+
+const EMPTY_ASSIGNED: Record<BotStrategy, RouterOpportunity | null> = {
+  UNDER_7: null,
+  UNDER_8: null,
+  OVER_2: null,
+  OVER_3: null,
+  EVEN_ODD: null,
+};
+
+function emptyRouterModel(): RouterModel {
+  return {
+    discovered: 0,
+    subscribed: 0,
+    sufficient: 0,
+    qualified: 0,
+    assignmentCount: 0,
+    rows: [],
+    ranked: [],
+    assignments: {},
+    assigned: EMPTY_ASSIGNED,
+    entries: {},
+  };
+}
 
 export function BotMonitorView() {
   const clientRef = useRef<PublicMarketDataClient | null>(null);
   const mountedRef = useRef(true);
-  const lastDigitEpochRef = useRef<Record<string, number>>({});
-  const digitHistoryRef = useRef<Record<string, number[]>>({});
+  const samplesRef = useRef<DigitSampleBook>(emptyDigitSamples());
+  const paperRef = useRef<PaperPositionBook>(emptyPaperBook());
   const proposalInFlightRef = useRef<Record<string, boolean>>({});
+  const proposalBackoffRef = useRef<Record<string, number>>({});
   const tradingSessionRef = useRef<TradingSession>(createTradingSession());
-  const openPaperTradeRef = useRef<PaperTrade | null>(null);
-  const paperRunningRef = useRef(false);
-  const assignedRef = useRef<Record<BotStrategy, RankedOpportunity | null>>({
-    UNDER_7: null,
-    OVER_2: null,
-    OVER_3: null,
-    UNDER_8: null,
-    EVEN_ODD: null,
-  });
-  const excludeSymbolsRef = useRef<string[]>([]);
-  const allowedStrategiesRef = useRef<Set<BotStrategy>>(new Set());
-  const masterRoleRef = useRef<ActiveMasterRole>("router");
-  const [loadedBotId, setLoadedBotId] = useState("autoswitcher");
+  const entriesAllowedRef = useRef(false);
+  const runtimeRef = useRef<RuntimeState>(createRuntimeState());
+  const contractsRef = useRef<Record<string, ParsedDigitContracts>>({});
+  const contractRetryRef = useRef<Record<string, number>>({});
+  const symbolsRef = useRef<DerivActiveSymbol[]>([]);
+  const connectionRef = useRef<DerivConnectionState>("disconnected");
+  const ticksRef = useRef<Record<string, MarketTickSnapshot>>({});
+  const modelRef = useRef<RouterModel>(emptyRouterModel());
+  const sampleReadyRef = useRef<Set<string>>(new Set());
+  const qualifiedKeyRef = useRef("");
+  const discoveryCountRef = useRef(-1);
+  const publishTimerRef = useRef<number | null>(null);
+  const performanceRef = useRef<PaperPerformanceBook>(readPerformanceBook());
+  const forwardRef = useRef<LivePaperBook>(readLivePaperBook());
+  const handleDigitRef = useRef<(snapshot: MarketTickSnapshot) => void>(() => {});
+  const publishRef = useRef<(immediate?: boolean) => void>(() => {});
 
-  const [connectionState, setConnectionState] =
-    useState<DerivConnectionState>("disconnected");
+  const [loadedBotId, setLoadedBotId] = useState("autoswitcher");
+  const [connectionState, setConnectionState] = useState<DerivConnectionState>("disconnected");
   const [statusDetail, setStatusDetail] = useState<string | null>(null);
   const [symbols, setSymbols] = useState<DerivActiveSymbol[]>([]);
-  const [marketTicks, setMarketTicks] = useState<Record<string, MarketTickSnapshot>>(
-    {},
-  );
-  const [digitHistory, setDigitHistory] = useState<Record<string, number[]>>({});
-  const [paperRunning, setPaperRunning] = useState(false);
-  const [tradingSession, setTradingSession] = useState<TradingSession>(
-    createTradingSession,
-  );
-  const [openPaperTrade, setOpenPaperTrade] = useState<PaperTrade | null>(null);
+  const [marketTicks, setMarketTicks] = useState<Record<string, MarketTickSnapshot>>({});
+  const [runtime, setRuntime] = useState<RuntimeState>(createRuntimeState);
+  const [cooldownInput, setCooldownInput] = useState(String(MIN_COOLDOWN_SECONDS));
+  const [cooldownError, setCooldownError] = useState<string | null>(null);
+  const [clock, setClock] = useState(() => Date.now());
+  const [tradingSession, setTradingSession] = useState<TradingSession>(createTradingSession);
+  const [openPositions, setOpenPositions] = useState<PaperTrade[]>([]);
   const [lastClosed, setLastClosed] = useState<PaperTrade | null>(null);
-  const [excludeSymbols, setExcludeSymbols] = useState<string[]>([]);
   const [performanceBook, setPerformanceBook] = useState<PaperPerformanceBook>(
-    readPerformanceBook,
+    performanceRef.current,
   );
-  const performanceRef = useRef<PaperPerformanceBook>(performanceBook);
-  const entryConfidenceRef = useRef(0);
+  const [forwardBook, setForwardBook] = useState<LivePaperBook>(forwardRef.current);
+  const [routerModel, setRouterModel] = useState<RouterModel>(emptyRouterModel);
+
+  function commitRuntime(next: RuntimeState) {
+    runtimeRef.current = next;
+    entriesAllowedRef.current = entriesAllowed(next.phase);
+    return next;
+  }
+
+  function rebuildModel(): RouterModel {
+    const markets = discoverEligibleMarkets(symbolsRef.current);
+    const phase = runtimeRef.current.phase;
+    const active = phase !== "STOPPED";
+    const routed = routeMarkets({
+      markets: markets.map((market) => ({
+        symbol: market.symbol,
+        marketName: market.displayName,
+        digits: samplesRef.current.digits[market.symbol] ?? [],
+        contracts: contractsRef.current[market.symbol] ?? unknownDigitContracts(),
+      })),
+      performance: performanceRef.current,
+    });
+    const openSymbols = new Set(Object.keys(paperRef.current.open));
+    const openCount = openSymbols.size;
+    const risk = canPlaceTrade(
+      tradingSessionRef.current,
+      DEFAULT_RISK_CONFIG,
+      Date.now(),
+      openCount,
+    );
+    const recovery = getRecoveryDecision(tradingSessionRef.current);
+    const entries = active
+      ? evaluateAssignmentEntries({
+          assignments: routed.assignments,
+          digits: samplesRef.current.digits,
+          openSymbols,
+          phase,
+          riskAllowed: risk.allowed && recovery.allowed,
+          riskReason: risk.allowed ? recovery.reason : risk.reason,
+          minimumConfidence: recovery.minimumConfidence,
+        })
+      : {};
+    const model: RouterModel = {
+      discovered: markets.length,
+      subscribed: active && connectionRef.current === "connected" ? markets.length : 0,
+      sufficient: markets.filter(
+        (market) => (samplesRef.current.digits[market.symbol]?.length ?? 0) >= MIN_DIGIT_SAMPLE,
+      ).length,
+      qualified: routed.ranked.length,
+      assignmentCount: Object.keys(routed.assignments).length,
+      rows: routerTableRows({
+        assignments: routed.assignments,
+        entries,
+        openSymbols,
+      }),
+      ranked: routed.ranked,
+      assignments: routed.assignments,
+      assigned: routed.assigned,
+      entries,
+    };
+    modelRef.current = model;
+    if (active) {
+      journalRouter(model);
+    }
+    return model;
+  }
+
+  function journalRouter(model: RouterModel) {
+    let state = runtimeRef.current;
+    const qualifiedKey = model.ranked
+      .map((item) => `${item.rank}:${item.symbol}:${item.strategy}`)
+      .join("|");
+    if (qualifiedKey !== qualifiedKeyRef.current) {
+      qualifiedKeyRef.current = qualifiedKey;
+      if (model.ranked.length > 0) {
+        const top = model.ranked[0];
+        state = noteRuntime(
+          state,
+          "OPPORTUNITY_QUALIFIED",
+          `${model.qualified} qualified market/specialist pairs.`,
+          Date.now(),
+        );
+        state = noteRuntime(
+          state,
+          "ROUTER_RANK_UPDATED",
+          `#1 ${top.symbol} ${top.strategy} score ${(top.rankScore ?? 0).toFixed(4)}`,
+          Date.now(),
+        );
+      }
+    }
+    for (const [symbol, slot] of Object.entries(model.assignments)) {
+      state = noteRuntime(
+        state,
+        "SPECIALIST_ASSIGNED",
+        `${slot.strategy} assigned → ${symbol}`,
+        Date.now(),
+      );
+    }
+    for (const [symbol, entry] of Object.entries(model.entries)) {
+      const kind =
+        entry.phase === "ARMED"
+          ? "ENTRY_ARMED"
+          : entry.phase === "SIGNAL"
+            ? "ENTRY_SIGNAL"
+            : entry.phase === "WATCHING"
+              ? "ENTRY_WATCHING"
+              : null;
+      if (!kind) {
+        continue;
+      }
+      state = noteRuntime(state, kind, `${symbol} ${entry.phase}`, Date.now());
+    }
+    if (state !== runtimeRef.current) {
+      commitRuntime(state);
+    }
+  }
+
+  function flushDisplay() {
+    if (!mountedRef.current) {
+      return;
+    }
+    setMarketTicks({ ...ticksRef.current });
+    setRouterModel(modelRef.current);
+    setOpenPositions(Object.values(paperRef.current.open));
+    setTradingSession(tradingSessionRef.current);
+    setRuntime(runtimeRef.current);
+    setPerformanceBook(performanceRef.current);
+  }
+
+  function publish(immediate = false) {
+    rebuildModel();
+    if (!mountedRef.current) {
+      return;
+    }
+    if (immediate) {
+      if (publishTimerRef.current !== null) {
+        window.clearTimeout(publishTimerRef.current);
+        publishTimerRef.current = null;
+      }
+      flushDisplay();
+      return;
+    }
+    if (publishTimerRef.current !== null) {
+      return;
+    }
+    publishTimerRef.current = window.setTimeout(() => {
+      publishTimerRef.current = null;
+      flushDisplay();
+    }, DISPLAY_FLUSH_MS);
+  }
+
+  function handleDigit(snapshot: MarketTickSnapshot) {
+    if (!mountedRef.current) {
+      return;
+    }
+    ticksRef.current = { ...ticksRef.current, [snapshot.symbol]: snapshot };
+    if (snapshot.status !== "live") {
+      publish(false);
+      return;
+    }
+    const digit = parseValidDigit(snapshot.digit);
+    if (digit === null) {
+      publish(false);
+      return;
+    }
+
+    const recorded = recordDigitSample(
+      samplesRef.current,
+      snapshot.symbol,
+      snapshot.epoch,
+      digit,
+    );
+    if (!recorded.accepted) {
+      return;
+    }
+    samplesRef.current = recorded.book;
+    if (
+      recorded.history.length >= MIN_DIGIT_SAMPLE &&
+      !sampleReadyRef.current.has(snapshot.symbol) &&
+      runtimeRef.current.phase !== "STOPPED"
+    ) {
+      sampleReadyRef.current.add(snapshot.symbol);
+      commitRuntime(
+        noteRuntime(
+          runtimeRef.current,
+          "SAMPLE_READY",
+          `${snapshot.symbol} sample is ready (${recorded.history.length}).`,
+          Date.now(),
+        ),
+      );
+    }
+
+    const position = paperRef.current.open[snapshot.symbol];
+    if (position) {
+      const ownsSession = position.runtimeSessionId === runtimeRef.current.session?.id;
+      const result = settleSymbolPosition(
+        paperRef.current,
+        ownsSession ? tradingSessionRef.current : createTradingSession(),
+        snapshot.symbol,
+        digit,
+        snapshot.epoch,
+      );
+      if (result.settled && result.trade) {
+        paperRef.current = result.book;
+        if (ownsSession) {
+          tradingSessionRef.current = result.session;
+        }
+        const nextBook = recordPaperOutcome(performanceRef.current, {
+          market: result.trade.symbol,
+          strategy: result.trade.strategy,
+          contractType: result.trade.contractType,
+          barrier: result.trade.barrier,
+          won: result.trade.status === "WON",
+          profitLoss: result.trade.profitLoss,
+          confidence: position.confidence,
+        });
+        performanceRef.current = nextBook;
+        setPerformanceBook(nextBook);
+        const nextForward = settleLivePaperRecord(forwardRef.current, result.trade.id, {
+          won: result.trade.status === "WON",
+          profitLoss: result.trade.profitLoss,
+          exitDigit: result.trade.exitDigit ?? digit,
+        });
+        forwardRef.current = nextForward;
+        setForwardBook(nextForward);
+        if (runtimeRef.current.session) {
+          commitRuntime(
+            recordSessionTrade(runtimeRef.current, {
+              tradeId: result.trade.id,
+              sessionId: position.runtimeSessionId || runtimeRef.current.session.id,
+              symbol: result.trade.symbol,
+              strategy: result.trade.strategy,
+              won: result.trade.status === "WON",
+              profitLoss: result.trade.profitLoss,
+              settledAt: result.trade.closedAt ?? Date.now(),
+            }),
+          );
+        }
+        setLastClosed(result.trade);
+        publish(true);
+      } else {
+        publish(false);
+      }
+      return;
+    }
+
+    maybeOpen(snapshot.symbol, snapshot.epoch, digit, recorded.history);
+    publish(false);
+  }
+
+  function maybeOpen(symbol: string, epoch: number, digit: number, history: number[]) {
+    if (LIVE_ORDERS_ENABLED || !entriesAllowedRef.current) {
+      return;
+    }
+    if ((proposalBackoffRef.current[symbol] ?? 0) > Date.now()) {
+      return;
+    }
+    if (proposalInFlightRef.current[symbol] || paperRef.current.open[symbol]) {
+      return;
+    }
+    const client = clientRef.current;
+    if (!client || epoch <= 0) {
+      return;
+    }
+    const model = rebuildModel();
+    const assignment = model.assignments[symbol];
+    const entry = model.entries[symbol];
+    if (!assignment || !entry) {
+      return;
+    }
+    if (
+      !mayOpenPaperTrade({
+        role: "specialist",
+        entryPhase: entry.phase,
+        liveOrdersEnabled: LIVE_ORDERS_ENABLED,
+        runtimePhase: runtimeRef.current.phase,
+      })
+    ) {
+      return;
+    }
+    const fit = fitForStrategy(history, assignment.strategy);
+    if (!fit?.qualified) {
+      return;
+    }
+    const sessionId = runtimeRef.current.session?.id ?? "";
+    void openArmedPaperTrade({
+      client,
+      symbol,
+      fit,
+      session: tradingSessionRef.current,
+      currency: PAPER_PROPOSAL_CURRENCY,
+      targetProfit: PAPER_TARGET_PROFIT,
+      riskConfig: DEFAULT_RISK_CONFIG,
+      inFlight: proposalInFlightRef.current,
+      entryDigit: digit,
+      accept: (trade) => {
+        if (!entriesAllowedRef.current || LIVE_ORDERS_ENABLED) {
+          return false;
+        }
+        const latestFit = fitForStrategy(
+          samplesRef.current.digits[symbol] ?? [],
+          trade.strategy,
+        );
+        const openCount = Object.keys(paperRef.current.open).length;
+        const risk = canPlaceTrade(
+          tradingSessionRef.current,
+          DEFAULT_RISK_CONFIG,
+          Date.now(),
+          openCount,
+        );
+        const recovery = getRecoveryDecision(tradingSessionRef.current);
+        const decision = blockArmedEntries(
+          runtimeRef.current.phase,
+          decideEntry({
+            enabled: true,
+            open: Boolean(paperRef.current.open[symbol]),
+            riskAllowed: risk.allowed && recovery.allowed,
+            riskReason: risk.allowed ? recovery.reason : risk.reason,
+            minimumConfidence: Math.max(
+              definitionForBotStrategy(trade.strategy).parameters.minimumConfidence,
+              recovery.minimumConfidence,
+            ),
+            fit: latestFit,
+          }),
+        );
+        if (
+          !mayOpenPaperTrade({
+            role: "specialist",
+            entryPhase: decision.phase,
+            liveOrdersEnabled: LIVE_ORDERS_ENABLED,
+            runtimePhase: runtimeRef.current.phase,
+          })
+        ) {
+          return false;
+        }
+        const tracked: TrackedPaperPosition = {
+          ...trade,
+          entryDigit: digit,
+          entryEpoch: epoch,
+          runtimeSessionId: sessionId,
+          signalKey: `${symbol}|${trade.strategy}|${epoch}`,
+          confidence: latestFit?.probability ?? fit.probability,
+          proposalId: trade.proposalId ?? "",
+        };
+        const committed = commitOpenPosition(paperRef.current, tracked);
+        if (!committed.accepted) {
+          return false;
+        }
+        paperRef.current = committed.book;
+        const nextForward = openLivePaperRecord(forwardRef.current, {
+          id: trade.id,
+          strategy: trade.strategy,
+          symbol,
+          predictedProbability: tracked.confidence,
+          askPrice: trade.stake,
+          payout: trade.quotedPayout,
+          contractType: trade.contractType,
+          barrier: trade.barrier,
+          openedAt: trade.openedAt,
+        });
+        forwardRef.current = nextForward;
+        setForwardBook(nextForward);
+        commitRuntime(
+          noteRuntime(
+            runtimeRef.current,
+            "PAPER_TRADE_OPENED",
+            `Paper trade opened ${trade.strategy} on ${symbol}.`,
+            Date.now(),
+          ),
+        );
+        return true;
+      },
+    })
+      .then((trade) => {
+        if (!trade) {
+          proposalBackoffRef.current[symbol] = Date.now() + PROPOSAL_BACKOFF_MS;
+          return;
+        }
+        if (mountedRef.current) {
+          setStatusDetail(null);
+          publishRef.current(true);
+        }
+      })
+      .catch(() => {
+        proposalBackoffRef.current[symbol] = Date.now() + PROPOSAL_BACKOFF_MS;
+        if (mountedRef.current) {
+          setStatusDetail("Paper proposal quote failed. No paper trade was opened.");
+        }
+      });
+  }
 
   useEffect(() => {
-    digitHistoryRef.current = digitHistory;
-  }, [digitHistory]);
+    mountedRef.current = true;
+    const session = retainPublicMarketData({
+      onConnectionChange: (state, detail) => {
+        connectionRef.current = state;
+        if (!mountedRef.current) {
+          return;
+        }
+        setConnectionState(state);
+        setStatusDetail(detail ?? null);
+      },
+      onActiveSymbols: (nextSymbols) => {
+        symbolsRef.current = nextSymbols;
+        if (!mountedRef.current) {
+          return;
+        }
+        setSymbols(nextSymbols);
+      },
+      onMarketTick: (snapshot) => {
+        handleDigitRef.current(snapshot);
+      },
+    });
+    clientRef.current = session.client;
+    return () => {
+      mountedRef.current = false;
+      if (publishTimerRef.current !== null) {
+        window.clearTimeout(publishTimerRef.current);
+      }
+      clientRef.current?.releaseTickSubscriptions("bot-monitor");
+      clientRef.current = null;
+      session.release();
+    };
+  }, []);
+
+  const eligible = useMemo(() => discoverEligibleMarkets(symbols), [symbols]);
 
   useEffect(() => {
-    tradingSessionRef.current = tradingSession;
-  }, [tradingSession]);
+    const client = clientRef.current;
+    if (!client || connectionState !== "connected") {
+      return;
+    }
+    if (runtime.phase === "STOPPED" && Object.keys(paperRef.current.open).length === 0) {
+      client.releaseTickSubscriptions("bot-monitor");
+      return;
+    }
+    const codes = eligible.map((market: EligibleMarket) => market.symbol);
+    const handle = window.setTimeout(() => {
+      client.setTickSubscriptions(codes, "bot-monitor", 2);
+    }, 150);
+    return () => window.clearTimeout(handle);
+  }, [connectionState, eligible, runtime.phase]);
 
   useEffect(() => {
-    openPaperTradeRef.current = openPaperTrade;
-  }, [openPaperTrade]);
+    const client = clientRef.current;
+    if (!client || connectionState !== "connected" || runtime.phase === "STOPPED") {
+      return;
+    }
+    const pending = eligible
+      .map((market) => market.symbol)
+      .filter((symbol) => {
+        const known = contractsRef.current[symbol];
+        if (!known) {
+          return true;
+        }
+        if (known.status !== "unknown") {
+          return false;
+        }
+        return Date.now() >= (contractRetryRef.current[symbol] ?? 0);
+      });
+    if (pending.length === 0) {
+      return;
+    }
+    let cancelled = false;
+    void probeDigitContracts(client, pending, () => cancelled, (symbol, parsed) => {
+      contractsRef.current = { ...contractsRef.current, [symbol]: parsed };
+      if (parsed.status === "unknown") {
+        contractRetryRef.current[symbol] = Date.now() + CONTRACT_RETRY_MS;
+      }
+    }).then(() => {
+      if (!cancelled && mountedRef.current) {
+        publishRef.current(true);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [connectionState, eligible, runtime.phase]);
 
   useEffect(() => {
-    paperRunningRef.current = paperRunning;
-  }, [paperRunning]);
+    if (!runtime.session || runtime.phase === "STOPPED") {
+      return;
+    }
+    const handle = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => window.clearInterval(handle);
+  }, [runtime.phase, runtime.session]);
 
   useEffect(() => {
-    excludeSymbolsRef.current = excludeSymbols;
-  }, [excludeSymbols]);
+    if (runtime.phase !== "COOLDOWN" || !runtime.session?.cooldownUntil) {
+      return;
+    }
+    const until = runtime.session.cooldownUntil;
+    let handle = 0;
+    const wait = () => {
+      const remaining = until - Date.now();
+      if (remaining <= 0) {
+        const result = dispatchRuntime(
+          runtimeRef.current,
+          "COOLDOWN_EXPIRED",
+          Date.now(),
+          runtimeRef.current.session?.cooldownDurationMs ?? runtimeRef.current.cooldownDurationMs,
+        );
+        if (!result.accepted) {
+          return;
+        }
+        commitRuntime(result.state);
+        setRuntime(result.state);
+        publishRef.current(true);
+        return;
+      }
+      handle = window.setTimeout(wait, Math.min(remaining, 2_147_483_647));
+    };
+    wait();
+    return () => window.clearTimeout(handle);
+  }, [runtime.phase, runtime.session]);
 
   useEffect(() => {
-    performanceRef.current = performanceBook;
     if (typeof sessionStorage === "undefined") {
       return;
     }
@@ -121,226 +687,133 @@ export function BotMonitorView() {
   }, [performanceBook]);
 
   useEffect(() => {
-    mountedRef.current = true;
-    const session = retainPublicMarketData({
-      onConnectionChange: (state, detail) => {
-        if (!mountedRef.current) {
-          return;
-        }
-        setConnectionState(state);
-        setStatusDetail(detail ?? null);
-        if (state === "disconnected") {
-          setMarketTicks({});
-          setDigitHistory({});
-          lastDigitEpochRef.current = {};
-        }
-      },
-      onActiveSymbols: (nextSymbols) => {
-        if (!mountedRef.current) {
-          return;
-        }
-        setSymbols(nextSymbols);
-      },
-      onMarketTick: (snapshot) => {
-        if (!mountedRef.current) {
-          return;
-        }
-        setMarketTicks((current) => ({
-          ...current,
-          [snapshot.symbol]: snapshot,
-        }));
-
-        if (snapshot.status !== "live") {
-          return;
-        }
-
-        const digit = parseValidDigit(snapshot.digit);
-        if (digit === null) {
-          return;
-        }
-
-        if (
-          snapshot.epoch > 0 &&
-          lastDigitEpochRef.current[snapshot.symbol] === snapshot.epoch
-        ) {
-          return;
-        }
-        lastDigitEpochRef.current[snapshot.symbol] = snapshot.epoch;
-
-        let nextHistory: number[] = [];
-        setDigitHistory((current) => {
-          const previous = current[snapshot.symbol] ?? [];
-          const next = [...previous, digit].slice(-20);
-          digitHistoryRef.current[snapshot.symbol] = next;
-          nextHistory = next;
-          return {
-            ...current,
-            [snapshot.symbol]: next,
-          };
-        });
-
-        const openTrade = openPaperTradeRef.current;
-        if (openTrade && openTrade.symbol === snapshot.symbol) {
-          const result = closeControlledPaperTrade(
-            tradingSessionRef.current,
-            openTrade,
-            digit,
-          );
-          tradingSessionRef.current = result.session;
-          openPaperTradeRef.current = null;
-          setTradingSession(result.session);
-          setOpenPaperTrade(null);
-          setLastClosed(result.trade);
-          if (result.trade.status === "WON" || result.trade.status === "LOST") {
-            const nextBook = recordPaperOutcome(performanceRef.current, {
-              market: result.trade.symbol,
-              strategy: result.trade.strategy,
-              contractType: result.trade.contractType,
-              barrier: result.trade.barrier,
-              won: result.trade.status === "WON",
-              profitLoss: result.trade.profitLoss,
-              confidence: entryConfidenceRef.current,
-            });
-            performanceRef.current = nextBook;
-            setPerformanceBook(nextBook);
-          }
-          if (result.trade.status === "LOST") {
-            setExcludeSymbols((current) =>
-              uniqueTail([...current, result.trade.symbol], 6),
-            );
-          } else if (result.trade.status === "WON") {
-            setExcludeSymbols([]);
-          }
-          return;
-        }
-
-        if (
-          !LIVE_ORDERS_ENABLED &&
-          paperRunningRef.current &&
-          !openPaperTradeRef.current
-        ) {
-          openAssignedPaperTrade({
-            symbol: snapshot.symbol,
-            history: nextHistory,
-            client: clientRef.current,
-            assigned: assignedRef.current,
-            excluded: excludeSymbolsRef.current,
-            session: tradingSessionRef.current,
-            inFlight: proposalInFlightRef.current,
-            allowedStrategies: allowedStrategiesRef.current,
-            masterRole: masterRoleRef.current,
-            mounted: () => mountedRef.current,
-            hasOpenTrade: () => Boolean(openPaperTradeRef.current),
-            onOpened: (trade) => {
-              openPaperTradeRef.current = trade;
-              setOpenPaperTrade(trade);
-            },
-            onArmed: (confidence) => {
-              entryConfidenceRef.current = confidence;
-            },
-            onQuoteError: () => {
-              setStatusDetail(
-                "Paper proposal quote failed. No paper trade was opened.",
-              );
-            },
-          });
-        }
-      },
-    });
-    clientRef.current = session.client;
-    return () => {
-      mountedRef.current = false;
-      clientRef.current = null;
-      session.release();
-    };
-  }, []);
-
-  const watched = useMemo(
-    () => symbols.slice(0, MASTER_STREAM_LIMIT).map((item) => item.underlying_symbol),
-    [symbols],
-  );
-
-  useEffect(() => {
-    const client = clientRef.current;
-    if (!client || connectionState !== "connected") {
-      return;
-    }
-    const handle = window.setTimeout(() => {
-      client.setTickSubscriptions(
-        watched.slice(0, MAX_LIVE_TICK_STREAMS),
-        "bot-monitor",
-        1,
-      );
-    }, 200);
-    return () => {
-      window.clearTimeout(handle);
-      client.releaseTickSubscriptions("bot-monitor");
-    };
-  }, [connectionState, watched]);
-
-  const routed = useMemo(
-    () =>
-      routeMarkets({
-        markets: watched.map((code) => ({
-          symbol: code,
-          marketName:
-            symbols.find((item) => item.underlying_symbol === code)?.underlying_symbol_name ??
-            code,
-          digits: digitHistory[code] ?? [],
-        })),
-        performance: performanceBook,
-        excludeSymbols: new Set(excludeSymbols),
-      }),
-    [digitHistory, excludeSymbols, performanceBook, symbols, watched],
-  );
-  const ranked = routed.ranked;
-  const assigned = routed.assigned;
+    forwardRef.current = forwardBook;
+    writeLivePaperBook(forwardBook);
+  }, [forwardBook]);
 
   useEffect(() => {
     setLoadedBotId(readLoadedBotId());
   }, []);
 
+  useEffect(() => {
+    if (!runtime.session || runtime.phase === "STOPPED") {
+      return;
+    }
+    const count = eligible.length;
+    if (discoveryCountRef.current === count) {
+      return;
+    }
+    discoveryCountRef.current = count;
+    let next = noteRuntime(
+      runtimeRef.current,
+      "MARKET_DISCOVERY_COMPLETE",
+      `Discovered ${count} eligible synthetic markets.`,
+      Date.now(),
+    );
+    next = noteRuntime(
+      next,
+      "MARKET_SUBSCRIBED",
+      `Subscribed ${count} markets on the shared public socket.`,
+      Date.now(),
+    );
+    commitRuntime(next);
+    setRuntime(next);
+  }, [eligible, runtime.phase, runtime.session]);
+
+  function changeCooldown(raw: string) {
+    setCooldownInput(raw);
+    const parsed = parseCooldownSeconds(raw);
+    if (!parsed.ok) {
+      setCooldownError(parsed.reason);
+      return;
+    }
+    const selected = selectCooldownDuration(runtimeRef.current, parsed.seconds);
+    if (!selected.accepted) {
+      setCooldownError(selected.reason);
+      return;
+    }
+    setCooldownError(null);
+    commitRuntime(selected.state);
+    setRuntime(selected.state);
+  }
+
+  function applyRuntime(command: RuntimeCommand) {
+    let current = runtimeRef.current;
+    if (command === "COOLDOWN") {
+      const parsed = parseCooldownSeconds(cooldownInput);
+      if (!parsed.ok) {
+        setCooldownError(parsed.reason);
+        return;
+      }
+      const selected = selectCooldownDuration(current, parsed.seconds);
+      if (!selected.accepted) {
+        setCooldownError(selected.reason);
+        return;
+      }
+      current = selected.state;
+      setCooldownError(null);
+    }
+    const result = dispatchRuntime(
+      current,
+      command,
+      Date.now(),
+      current.session?.cooldownDurationMs ?? current.cooldownDurationMs,
+    );
+    if (!result.accepted) {
+      return;
+    }
+    let next = result.state;
+    if (command === "RUN") {
+      const fresh = createTradingSession();
+      tradingSessionRef.current = fresh;
+      setTradingSession(fresh);
+      discoveryCountRef.current = -1;
+      qualifiedKeyRef.current = "";
+      next = noteRuntime(
+        next,
+        "MARKET_DISCOVERY_STARTED",
+        "Market discovery started.",
+        Date.now(),
+      );
+    }
+    commitRuntime(next);
+    setRuntime(next);
+    publish(true);
+  }
+
+  handleDigitRef.current = handleDigit;
+  publishRef.current = publish;
+
   const loadedCard = FREE_BOT_GALLERY.find((item) => item.galleryId === loadedBotId);
   const loadedPreset = presetById(loadedCard?.presetId ?? loadedBotId);
-  const allowedStrategyList = loadedCard?.specialist
-    ? [loadedCard.specialist]
-    : loadedPreset.strategies;
   const masterRole = resolveActiveMasterRole(loadedPreset, loadedCard?.specialist);
-  assignedRef.current = assigned;
-  allowedStrategiesRef.current = new Set(allowedStrategyList);
-  masterRoleRef.current = masterRole;
   const recovery = getRecoveryDecision(tradingSession);
-  const risk = canPlaceTrade(tradingSession);
   const entryByStrategy = useMemo(() => {
     const decisions = {} as Record<BotStrategy, EntryDecision>;
     for (const bot of SPECIALIST_BOTS) {
-      const slot = assigned[bot.id];
-      const digits = slot ? (digitHistory[slot.symbol] ?? []) : [];
-      decisions[bot.id] = gateForMasterRole(
-        masterRole,
-        decideEntry({
-          enabled: allowedStrategyList.includes(bot.id),
-          open: openPaperTrade?.strategy === bot.id,
-          riskAllowed: risk.allowed && recovery.allowed,
-          riskReason: risk.allowed ? recovery.reason : risk.reason,
-          minimumConfidence: recovery.minimumConfidence,
-          fit: slot ? fitForStrategy(digits, bot.id) : null,
-        }),
-      );
+      const slot = routerModel.assigned[bot.id];
+      decisions[bot.id] = slot
+        ? routerModel.entries[slot.symbol] ?? {
+            phase: "WATCHING",
+            armed: false,
+            reason: slot.reason ?? "Watching the assigned market",
+          }
+        : { phase: "IDLE", armed: false, reason: "No qualified assignment" };
     }
     return decisions;
-  }, [
-    allowedStrategyList,
-    assigned,
-    masterRole,
-    digitHistory,
-    openPaperTrade,
-    recovery.allowed,
-    recovery.minimumConfidence,
-    recovery.reason,
-    risk.allowed,
-    risk.reason,
-  ]);
+  }, [routerModel]);
+  const assignmentCounts = useMemo(() => {
+    const counts: Partial<Record<BotStrategy, number>> = {};
+    for (const item of Object.values(routerModel.assignments)) {
+      counts[item.strategy] = (counts[item.strategy] ?? 0) + 1;
+    }
+    return counts;
+  }, [routerModel.assignments]);
+  const panelStrategies = useMemo(
+    () => new Set(SPECIALIST_BOTS.map((bot) => bot.id)),
+    [],
+  );
+  const topRow = routerModel.rows[0] ?? null;
   const cooldownActive =
     tradingSession.consecutiveLosses > 0 &&
     tradingSession.lastLossAt !== null &&
@@ -366,19 +839,31 @@ export function BotMonitorView() {
               Free Bots
             </h2>
             <p className="mt-2 max-w-xl text-sm leading-6 text-muted">
-              Choose a specialist bot, load it, and let the Master coordinate the
-              market.
+              RUN discovers the eligible synthetic universe, ranks market and specialist
+              pairs, and lets qualified markets paper-trade independently.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setPaperRunning((current) => !current)}
-            disabled={connectionState !== "connected"}
-            className="rounded-xl border border-warning/40 bg-warning/15 px-4 py-2.5 text-sm font-medium text-foreground disabled:text-muted"
-          >
-            {paperRunning ? "Pause paper bots" : "Start paper bots"}
-          </button>
         </div>
+
+        <RuntimeControlBar
+          state={runtime}
+          now={clock}
+          markets={routerModel.discovered}
+          candidate={topRow ? `${topRow.specialist} ${topRow.symbol}` : "None"}
+          specialist={
+            topRow ? `${topRow.specialist} ${topRow.symbol}` : "None"
+          }
+          signalState={
+            openPositions.length > 0
+              ? `${openPositions.length} PAPER`
+              : topRow?.state ?? (runtime.phase === "RUNNING" ? "WATCHING" : runtime.phase)
+          }
+          openPositions={openPositions}
+          cooldownSeconds={cooldownInput}
+          cooldownError={cooldownError}
+          onCooldownSecondsChange={changeCooldown}
+          onCommand={applyRuntime}
+        />
 
         <div className="rounded-2xl border border-warning/30 bg-warning/10 px-4 py-3">
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-warning">
@@ -397,35 +882,34 @@ export function BotMonitorView() {
           />
           <StatusChip paper label="Trading Mode: PAPER" />
           <StatusChip
-            live={paperRunning && connectionState === "connected"}
+            live={runtime.phase === "RUNNING" && connectionState === "connected"}
             label={`Master: ${
-              paperRunning
+              runtime.phase === "RUNNING"
                 ? masterRole === "router"
                   ? "Routing"
                   : masterRole === "entry"
                     ? "Gating"
                     : "Specialist"
-                : "Paused"
+                : runtime.phase
             }`}
           />
-          <StatusChip label={`Loaded Bots: ${allowedStrategyList.length}`} />
+          <StatusChip label={`Specialists: ${SPECIALIST_BOTS.length}`} />
         </div>
       </header>
 
       <BotGallery
         loadedPresetId={loadedBotId}
         cardState={(item) => {
-          const slot = item.specialist ? assigned[item.specialist] : null;
+          const slot = item.specialist ? routerModel.assigned[item.specialist] : null;
           const entry = item.specialist ? entryByStrategy[item.specialist] : null;
           const loaded = loadedBotId === item.galleryId;
           return {
             loaded,
             status: entry?.phase ?? (loaded ? "LOADED" : "IDLE"),
-            assignedMarket: loaded ? slot?.marketName : undefined,
-            confidence:
-              loaded && slot ? `${(slot.confidence * 100).toFixed(1)}%` : undefined,
+            assignedMarket: slot?.marketName,
+            confidence: slot ? `${(slot.confidence * 100).toFixed(1)}%` : undefined,
             ready: entry?.phase === "ARMED",
-            reason: loaded ? entry?.reason ?? slot?.reason : undefined,
+            reason: entry?.reason ?? slot?.reason,
           };
         }}
         onLoad={(galleryId) => {
@@ -438,6 +922,18 @@ export function BotMonitorView() {
         <p className="text-sm text-muted">{statusDetail}</p>
       ) : null}
 
+      {runtime.phase !== "STOPPED" ? (
+        <MarketRouterPanel
+          discovered={routerModel.discovered}
+          subscribed={routerModel.subscribed}
+          sufficient={routerModel.sufficient}
+          qualified={routerModel.qualified}
+          assignments={routerModel.assignmentCount}
+          openPositions={openPositions.length}
+          rows={routerModel.rows}
+        />
+      ) : null}
+
       <MasterControlPanel
         roleTitle={
           masterRole === "router"
@@ -446,31 +942,25 @@ export function BotMonitorView() {
               ? "Entry Signal Hunter"
               : loadedCard?.name ?? "Specialist"
         }
-        activityLabel={
-          masterRole === "router"
-            ? "Routing"
-            : masterRole === "entry"
-              ? "Gating"
-              : "Specialist"
-        }
+        statusLabel={runtime.phase}
         connectionLabel={connectionLabel(connectionState)}
-        paperRunning={paperRunning}
         recoveryReason={recovery.reason}
         recoveryMode={recovery.recoveryMode}
-        marketsScanned={watched.length}
-        ranked={ranked}
-        assigned={assigned}
+        marketsScanned={routerModel.discovered}
+        ranked={routerModel.ranked}
+        assigned={routerModel.assigned}
         profitLoss={tradingSession.profitLoss}
         wins={tradingSession.wins}
         losses={tradingSession.losses}
-        openPaperTrade={openPaperTrade}
+        openPositions={openPositions}
       />
 
       <ActiveBotPanel
-        assigned={assigned}
+        assigned={routerModel.assigned}
         marketTicks={marketTicks}
-        allowedStrategies={new Set(allowedStrategyList)}
-        openPaperTrade={openPaperTrade}
+        allowedStrategies={panelStrategies}
+        openPositions={openPositions}
+        assignmentCounts={assignmentCounts}
         cooldown={cooldownActive}
         entries={entryByStrategy}
       />
@@ -482,9 +972,10 @@ export function BotMonitorView() {
         </p>
       ) : null}
 
-      {!paperRunning ? (
+      {runtime.phase === "STOPPED" ? (
         <p className="text-sm text-muted">
-          Paper bots are paused. Start them to open quoted paper trades only.
+          Runtime is stopped. Press RUN to discover the eligible synthetic universe.
+          Real-money orders stay disabled.
         </p>
       ) : null}
     </div>
@@ -513,74 +1004,30 @@ function StatusChip({
   );
 }
 
-function openAssignedPaperTrade(params: {
-  symbol: string;
-  history: number[];
-  client: PublicMarketDataClient | null;
-  assigned: Record<BotStrategy, RankedOpportunity | null>;
-  excluded: string[];
-  session: TradingSession;
-  inFlight: Record<string, boolean>;
-  allowedStrategies: ReadonlySet<BotStrategy>;
-  masterRole: ActiveMasterRole;
-  mounted: () => boolean;
-  hasOpenTrade: () => boolean;
-  onOpened: (trade: PaperTrade) => void;
-  onArmed: (confidence: number) => void;
-  onQuoteError: () => void;
-}) {
-  const { client, symbol, history } = params;
-  if (!client) {
-    return;
-  }
-  const slot = Object.values(params.assigned).find(
-    (item) => item?.symbol === symbol && params.allowedStrategies.has(item.strategy),
-  );
-  if (!slot || params.excluded.includes(symbol)) {
-    return;
-  }
-  const fit = fitForStrategy(history, slot.strategy);
-  const risk = canPlaceTrade(params.session);
-  const recovery = getRecoveryDecision(params.session);
-  const entry = decideEntry({
-    enabled: true,
-    open: params.hasOpenTrade(),
-    riskAllowed: risk.allowed && recovery.allowed,
-    riskReason: risk.allowed ? recovery.reason : risk.reason,
-    minimumConfidence: recovery.minimumConfidence,
-    fit,
-  });
-  if (!fit || !paperExecutionPermitted(params.masterRole, entry.phase)) {
-    return;
-  }
-
-  void openArmedPaperTrade({
-    client,
-    symbol,
-    fit,
-    session: params.session,
-    currency: PAPER_PROPOSAL_CURRENCY,
-    targetProfit: PAPER_TARGET_PROFIT,
-    riskConfig: DEFAULT_RISK_CONFIG,
-    inFlight: params.inFlight,
-  }).then((trade) => {
-    if (!trade) {
-      return null;
-    }
-    params.onArmed(fit.probability);
-    return trade;
-  })
-    .then((trade) => {
-      if (!trade || !params.mounted() || params.hasOpenTrade()) {
+async function probeDigitContracts(
+  client: PublicMarketDataClient,
+  symbols: string[],
+  isCancelled: () => boolean,
+  onUpdate: (symbol: string, contracts: ParsedDigitContracts) => void,
+): Promise<void> {
+  const queue = [...symbols];
+  const workers = Array.from({ length: CONTRACT_PROBE_CONCURRENCY }, async () => {
+    while (queue.length > 0 && !isCancelled()) {
+      const symbol = queue.shift();
+      if (!symbol) {
         return;
       }
-      params.onOpened(trade);
-    })
-    .catch(() => {
-      if (params.mounted()) {
-        params.onQuoteError();
+      try {
+        const payload = await client.requestContractsFor({
+          contracts_for: symbol,
+        });
+        onUpdate(symbol, parseDigitContracts(payload));
+      } catch {
+        onUpdate(symbol, unknownDigitContracts());
       }
-    });
+    }
+  });
+  await Promise.all(workers);
 }
 
 function readPerformanceBook(): PaperPerformanceBook {
@@ -600,16 +1047,6 @@ function readPerformanceBook(): PaperPerformanceBook {
   } catch {
     return emptyPerformanceBook();
   }
-}
-
-function uniqueTail(values: string[], max: number): string[] {
-  const unique: string[] = [];
-  for (const value of values) {
-    if (!unique.includes(value)) {
-      unique.push(value);
-    }
-  }
-  return unique.slice(-max);
 }
 
 function parseValidDigit(value: string | number | undefined | null): number | null {

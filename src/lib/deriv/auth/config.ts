@@ -15,6 +15,9 @@ export const ENV_DERIV_OAUTH_REDIRECT_URI =
 const SESSION_STORAGE_KEY = "deriv.intelligence.account.session";
 const PKCE_STORAGE_KEY = "deriv.intelligence.oauth.pkce";
 
+export const OAUTH_ACCESS_COOKIE = "deriv_oauth_at";
+export const SELECTED_LOGINID_COOKIE = "deriv_selected_loginid";
+
 export function getDerivAppId(): string | null {
   const value = process.env.NEXT_PUBLIC_DERIV_APP_ID?.trim();
   return value ? value : null;

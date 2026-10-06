@@ -4,9 +4,8 @@ import { SPECIALIST_BOTS } from "@/src/lib/trading/master-bot";
 
 export function MasterControlPanel({
   roleTitle,
-  activityLabel,
+  statusLabel,
   connectionLabel,
-  paperRunning,
   recoveryReason,
   recoveryMode,
   marketsScanned,
@@ -15,12 +14,11 @@ export function MasterControlPanel({
   profitLoss,
   wins,
   losses,
-  openPaperTrade,
+  openPositions,
 }: {
   roleTitle: string;
-  activityLabel: string;
+  statusLabel: string;
   connectionLabel: string;
-  paperRunning: boolean;
   recoveryReason: string;
   recoveryMode: boolean;
   marketsScanned: number;
@@ -29,7 +27,7 @@ export function MasterControlPanel({
   profitLoss: number;
   wins: number;
   losses: number;
-  openPaperTrade: PaperTrade | null;
+  openPositions: PaperTrade[];
 }) {
   return (
     <section className="overflow-hidden rounded-2xl border border-cyan-400/20 bg-[#141922]">
@@ -41,16 +39,18 @@ export function MasterControlPanel({
         <p className="mt-1 text-sm text-muted">{recoveryReason}</p>
       </div>
       <div className="grid gap-3 p-5 sm:grid-cols-2 xl:grid-cols-4">
-        <Metric label="Master status" value={paperRunning ? activityLabel : "Paused"} />
+        <Metric label="Master status" value={statusLabel} />
         <Metric label="Market data" value={connectionLabel} />
         <Metric label="Markets scanned" value={String(marketsScanned)} />
         <Metric label="Risk / recovery" value={recoveryMode ? "Recovery" : "Normal"} />
         <Metric label="Paper P/L" value={profitLoss.toFixed(2)} />
         <Metric label="Wins / Losses" value={`${wins} / ${losses}`} />
         <Metric
-          label="Open paper trade"
+          label="Open paper positions"
           value={
-            openPaperTrade ? openPaperTrade.strategy.replaceAll("_", " ") : "None"
+            openPositions.length === 0
+              ? "None"
+              : openPositions.map((trade) => trade.symbol).join(", ")
           }
         />
         <Metric

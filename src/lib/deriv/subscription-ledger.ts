@@ -64,6 +64,13 @@ export function releaseConsumer(ledger: SubscriptionLedger, symbol: string): Sub
   };
 }
 
+export function requiredSubscriptionSymbols(
+  ledger: SubscriptionLedger,
+  ceiling: number,
+): string[] {
+  return activeSymbols(ledger, ceiling);
+}
+
 export function activeSymbols(ledger: SubscriptionLedger, limit: number): string[] {
   const unique: string[] = [];
   const push = (symbol: string) => {
